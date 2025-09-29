@@ -36,14 +36,14 @@ class LaneDetector(object):
         self.current_mode = "LOOK_AHEAD"      
         self.weight_sum = 1.0
 
-        # 외부에서 탐색 모드를 변경하는 함수 추가 ---
-        def set_mode(self, mode):
-            if mode == "close_up":
-                self.active_rois = self.rois_close_up
-                self.current_mode = "CLOSE_UP"
-            else: # 기본값은 "look_ahead"
-                self.active_rois = self.rois_look_ahead
-                self.current_mode = "LOOK_AHEAD"
+    # 외부에서 탐색 모드를 변경하는 함수 추가 ---
+    def set_mode(self, mode):
+        if mode == "close_up":
+            self.active_rois = self.rois_close_up
+            self.current_mode = "CLOSE_UP"
+        else: # 기본값은 "look_ahead"
+            self.active_rois = self.rois_look_ahead
+            self.current_mode = "LOOK_AHEAD"
 
 
 

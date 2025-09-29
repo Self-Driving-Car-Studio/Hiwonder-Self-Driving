@@ -155,6 +155,7 @@ class SelfDrivingNode(Node):
         self.start_slow_down = False  # slowing down sign
         self.normal_speed = 0.6 # normal driving speed
         self.slow_down_speed = 0.5  # slowing down speed
+        self.cornering_speed = 0.3 # 코너링 스피드 ( 미리 진입하기 전부터 작동 )
 
         self.traffic_signs_status = None  # record the state of the traffic lights
         self.red_loss_count = 0
@@ -362,18 +363,38 @@ class SelfDrivingNode(Node):
                 # line following processing
                 result_image, lane_angle, lane_x = self.lane_detect(binary_image, image.copy())  # the coordinate of the line while the robot is in the middle of the lane
                 if lane_x >= 0 and not self.stop:
-                    if lane_x > 180:
+                    
+
+                    if lane_x > 180: # 1순위 코너감지, 턴 시작
+                        
+                        # 우회전으로 판단하고 mode 전환
+                        self.lane_detect.set_mode("close_up")
+
                         self.count_turn += 1
                         if self.count_turn > 5 and not self.start_turn:
                             self.start_turn = True
                             self.count_turn = 0
                             self.start_turn_time_stamp = time.time()
                         if self.machine_type != 'MentorPi_Acker':
-                            twist.linear.x = 0.4
+                            twist.linear.x = self.cornering_speed # 코너링 속도
                             twist.angular.z = -1.2   # turning speed
                         else:
                             twist.angular.z = twist.linear.x * math.tan(-0.5061) / 0.145
+
+                    elif lane_x > 150: # 코너링 미리 감지하고 준비 ( 속도감소 ) - 2순위
+                        twist.linear.x = self.cornering_speed
+                        # 감속 중에도 PID 제어는 유지
+                        self.pid.SetPoint = 130 
+                        self.pid.update(lane_x)
+                        twist.angular.z = -common.set_range(self.pid.output, -0.3, 0.3)
+
                     else:  # use PID algorithm to correct turns on a straight road
+
+                        # 직진으로 판단하고 mode전환
+                        self.lane_detect.set_mode("look_ahead")
+                        twist.linear.x = self.normal_speed # 일반 속도
+
+
                         self.count_turn = 0
                         if time.time() - self.start_turn_time_stamp > 2 and self.start_turn:
                             self.start_turn = False
@@ -389,6 +410,15 @@ class SelfDrivingNode(Node):
                                 twist.angular.z = 0.15 * math.tan(-0.5061) / 0.145
                     self.mecanum_pub.publish(twist)
                 else:
+                    # 차선인식 못한 경우
+                    self.lane_detect.set_mode("close_up")
+
+                    # 느린 명령주면서 차선 찾기
+                    recovery_twist = Twist()
+                    recovery_twist.linear.x = 0.1  # 느린 속도로
+                    recovery_twist.angular.z = 0.4   # 왼쪽으로 살짝 회전
+                    self.mecanum_pub.publish(recovery_twist)
+
                     self.pid.clear()
 
              
