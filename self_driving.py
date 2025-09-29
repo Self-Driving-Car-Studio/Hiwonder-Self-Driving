@@ -273,7 +273,23 @@ class SelfDrivingNode(Node):
                         self.count_park = 0  
 
                 result_image, lane_angle, lane_x = self.lane_detect(binary_image, image.copy())
-                if lane_x >= 0 and not self.stop:  
+                if lane_x >= 0 and not self.stop:
+                    # ================== RQT 시각화 코드 시작 ==================
+                    # lane_x 위치에 세로선을 그려서 RQT에서 확인하기 위함
+                    h, w = result_image.shape[:2]  # 이미지 높이와 너비 가져오기
+                    line_color = (0, 0, 255)       # 선 색상 (빨간색 - BGR 순서)
+                    line_thickness = 2             # 선 두께
+
+                    # 화면 중앙부터 하단까지 lane_x 위치에 선 그리기
+                    start_point = (int(lane_x), h // 2)
+                    end_point = (int(lane_x), h)
+                    cv2.line(result_image, start_point, end_point, line_color, line_thickness)
+
+                    # lane_x 좌표값 텍스트로 표시
+                    text = f"lane_x: {int(lane_x)}"
+                    text_position = (int(lane_x) + 5, h - 20) # 선 오른쪽 옆에 텍스트 위치 지정
+                    cv2.putText(result_image, text, text_position, cv2.FONT_HERSHEY_SIMPLEX, 0.7, line_color, 2)
+                    # ================== RQT 시각화 코드 끝 ====================  
                     if lane_x > 150:  
                         self.count_turn += 1
                         if self.count_turn > 5 and not self.start_turn:
