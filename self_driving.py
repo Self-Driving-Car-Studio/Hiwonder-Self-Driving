@@ -19,7 +19,8 @@ from sdk.common import colors, plot_one_box
 from example.self_driving import lane_detect
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
-from ros_robot_controller_msgs.msg import BuzzerState, SetPWMServoState, PWMServoState
+# [추가] RGB LED 제어를 위한 메시지 타입을 import 합니다.
+from ros_robot_controller_msgs.msg import BuzzerState, SetPWMServoState, PWMServoState, RGBStates, RGBState
 
 class SelfDrivingNode(Node):
     def __init__(self, name):
@@ -39,6 +40,8 @@ class SelfDrivingNode(Node):
         self.colors = common.Colors()
         self.machine_type = os.environ.get('MACHINE_TYPE')
         self.lane_detect = lane_detect.LaneDetector("yellow")
+        # [추가] RGB LED 제어를 위한 Publisher를 생성합니다.
+        self.rgb_pub = self.create_publisher(RGBStates, '/ros_robot_controller/set_rgb', 1)
 
         self.mecanum_pub = self.create_publisher(Twist, '/controller/cmd_vel', 1)
         self.servo_state_pub = self.create_publisher(SetPWMServoState, 'ros_robot_controller/pwm_servo/set_state', 1)
@@ -56,6 +59,19 @@ class SelfDrivingNode(Node):
         self.stop_yolov5_client.wait_for_service()
 
         self.timer = self.create_timer(0.0, self.init_process, callback_group=timer_cb_group)
+
+# [추가] RGB LED 제어를 위한 헬퍼 함수
+    def set_led_color(self, led_id, r, g, b):
+        """지정한 LED의 색상을 설정하는 명령을 발행하는 함수"""
+        msg = RGBStates()
+        state = RGBState()
+        state.index = led_id
+        state.red = r
+        state.green = g
+        state.blue = b
+        msg.states.append(state)
+        self.rgb_pub.publish(msg)
+        time.sleep(0.01) # 짧은 딜레이로 메시지 전송 보장
 
     def init_process(self):
         self.timer.cancel()
@@ -228,6 +244,11 @@ class SelfDrivingNode(Node):
 
             result_image = image.copy()
             if self.start:
+                # [수정] 주행 시작 시, 두 LED를 모두 초록색으로 켭니다.
+                self.get_logger().info('주행 시작! LED를 초록색으로 켭니다.')
+                self.set_led_color(1, 0, 255, 0) # 1번 LED 초록색
+                self.set_led_color(2, 0, 255, 0) # 2번 LED 초록색
+            
                 h, w = image.shape[:2]
 
                 binary_image = self.lane_detect.get_binary(image)
@@ -369,8 +390,15 @@ def main():
     node = SelfDrivingNode('self_driving')
     executor = MultiThreadedExecutor()
     executor.add_node(node)
-    executor.spin()
-    node.destroy_node()
+    try:
+        executor.spin()
+    finally:
+        # [추가] 노드 종료 시 안전을 위해 LED를 끄고 로봇을 정지시킵니다.
+        node.get_logger().info('노드를 종료합니다. LED를 끄고 로봇을 정지합니다.')
+        node.set_led_color(1, 0, 0, 0)
+        node.set_led_color(2, 0, 0, 0)
+        node.mecanum_pub.publish(Twist())
+        node.destroy_node()
  
 if __name__ == "__main__":
     main()
