@@ -26,13 +26,17 @@ from example.self_driving import lane_detect
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from ros_robot_controller_msgs.msg import BuzzerState, SetPWMServoState, PWMServoState, RGBStates, RGBState # for RGB LED control import: RGBStates, RGBState #jr
+
 class SelfDrivingNode(Node):
     def __init__(self, name):
         rclpy.init()
         super().__init__(name, allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True)
         self.name = name
         self.is_running = True
-        self.pid = pid.PID(0.4, 0.0, 0.05)
+
+        self.pid = pid.PID(0.2, 0.0, 0.1) # D 제어부분 0.1 로 증가
+        self.turn_pid = pid.PID(0.2, 0.0, 0.4) # 일반pid 와 turn 전용 pid 구분, turn 의 D부분을 올림
+  
         self.param_init()
 
         self.fps = fps.FPS()
@@ -149,8 +153,8 @@ class SelfDrivingNode(Node):
         self.crosswalk_length = 0.1 + 0.3  # the length of zebra crossing and the robot
 
         self.start_slow_down = False  # slowing down sign
-        self.normal_speed = 0.1 # normal driving speed
-        self.slow_down_speed = 0.1  # slowing down speed
+        self.normal_speed = 0.6 # normal driving speed
+        self.slow_down_speed = 0.5  # slowing down speed
 
         self.traffic_signs_status = None  # record the state of the traffic lights
         self.red_loss_count = 0
@@ -284,11 +288,6 @@ class SelfDrivingNode(Node):
                 # ### [추가] LED 상태 제어 로직 ###
                  # [수정] LED 상태 제어 로직 (우선순위 적용)
                 # 우선순위 0: 주차 완료
-<<<<<<< HEAD
-=======
-                self.set_led_color(1, 0, 255, 0) # 초록색
-                self.set_led_color(2, 0, 255, 0) # 초록색
->>>>>>> main
                 if self.parking_completed:
                     self.set_led_color(1, 0, 0, 0) # 끄기
                     self.set_led_color(2, 0, 0, 0) # 끄기
@@ -321,7 +320,7 @@ class SelfDrivingNode(Node):
 
                 # if detecting the zebra crossing, start to slow down
                 self.get_logger().info('\033[1;33m%s\033[0m' % self.crosswalk_distance)
-                if 70 < self.crosswalk_distance and not self.start_slow_down:  #바꿈 jr 원래값 70 # The robot starts to slow down only when it is close enough to the zebra crossing
+                if 200 < self.crosswalk_distance and not self.start_slow_down:  #바꿈 jr 원래값 70 # The robot starts to slow down only when it is close enough to the zebra crossing
                     self.count_crosswalk += 1
                     if self.count_crosswalk == 3:  # judge multiple times to prevent false detection
                         self.count_crosswalk = 0
@@ -363,14 +362,15 @@ class SelfDrivingNode(Node):
                 # line following processing
                 result_image, lane_angle, lane_x = self.lane_detect(binary_image, image.copy())  # the coordinate of the line while the robot is in the middle of the lane
                 if lane_x >= 0 and not self.stop:
-                    if lane_x > 150:
+                    if lane_x > 180:
                         self.count_turn += 1
                         if self.count_turn > 5 and not self.start_turn:
                             self.start_turn = True
                             self.count_turn = 0
                             self.start_turn_time_stamp = time.time()
                         if self.machine_type != 'MentorPi_Acker':
-                            twist.angular.z = -0.45   # turning speed
+                            twist.linear.x = 0.4
+                            twist.angular.z = -1.2   # turning speed
                         else:
                             twist.angular.z = twist.linear.x * math.tan(-0.5061) / 0.145
                     else:  # use PID algorithm to correct turns on a straight road
