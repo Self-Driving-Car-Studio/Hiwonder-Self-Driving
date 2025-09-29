@@ -27,7 +27,8 @@ class SelfDrivingNode(Node):
         super().__init__(name, allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True)
         self.name = name
         self.is_running = True
-        self.pid = pid.PID(0.4, 0.0, 0.05)
+        self.pid = pid.PID(0.2, 0.0, 0.1) # D 제어부분 0.1 로 증가
+        self.turn_pid = pid.PID(0.2, 0.0, 0.4) # 일반pid 와 turn 전용 pid 구분, turn 의 D부분을 올림
         self.param_init()
 
         self.fps = fps.FPS()  
@@ -104,8 +105,8 @@ class SelfDrivingNode(Node):
         self.crosswalk_length = 0.1 + 0.3 
 
         self.start_slow_down = False  
-        self.normal_speed = 0.1 
-        self.slow_down_speed = 0.1 
+        self.normal_speed = 0.6 
+        self.slow_down_speed = 0.5
 
         self.traffic_signs_status = None  
         self.red_loss_count = 0
@@ -235,7 +236,7 @@ class SelfDrivingNode(Node):
                 twist = Twist()
 
                 self.get_logger().info('\033[1;33m%s\033[0m' % self.crosswalk_distance)
-                if 70 < self.crosswalk_distance and not self.start_slow_down:  
+                if 200 < self.crosswalk_distance and not self.start_slow_down:  # 횡단보도 인식 거리 증가
                     self.count_crosswalk += 1
                     if self.count_crosswalk == 3: 
                         self.count_crosswalk = 0
@@ -272,19 +273,27 @@ class SelfDrivingNode(Node):
                     else:
                         self.count_park = 0  
 
+                # 차선유지 부분
                 result_image, lane_angle, lane_x = self.lane_detect(binary_image, image.copy())
                 if lane_x >= 0 and not self.stop:  
-                    if lane_x > 150:  
+                    if lane_x > 180:  
                         self.count_turn += 1
                         if self.count_turn > 5 and not self.start_turn:
                             self.start_turn = True
                             self.count_turn = 0
                             self.start_turn_time_stamp = time.time()
+                        
+                        # 우회전 상태 업데이트
+                        self.was_turning_right = True
+
                         if self.machine_type != 'MentorPi_Acker':
-                            twist.angular.z = -0.45 
+                            twist.linear.x = 0.4
+                            twist.angular.z = -1.5 # 더 빨리 돌면서, pid 제어로 너무 확돌지는 않게 제어
                         else:
                             twist.angular.z = twist.linear.x * math.tan(-0.5061) / 0.145
                     else:
+                        # 우회전 아니라는 업데이트
+                        self.was_turning_right = False
                         self.count_turn = 0
                         if time.time() - self.start_turn_time_stamp > 2 and self.start_turn:
                             self.start_turn = False
@@ -292,7 +301,7 @@ class SelfDrivingNode(Node):
                             self.pid.SetPoint = 175
                             self.pid.update(lane_x)
                             if self.machine_type != 'MentorPi_Acker':
-                                twist.angular.z = common.set_range(self.pid.output, -0.1, 0.1)
+                                twist.angular.z = common.set_range(self.turn_pid.output, -0.3, 0.3)
                             else:
                                 twist.angular.z = twist.linear.x * math.tan(common.set_range(self.pid.output, -0.1, 0.1)) / 0.145
                         else:
@@ -300,7 +309,14 @@ class SelfDrivingNode(Node):
                                 twist.angular.z = 0.15 * math.tan(-0.5061) / 0.145
                     self.mecanum_pub.publish(twist)  
                 else:
-                    self.pid.clear()
+                    # 차선을 인식하지 못할 경우는 보통 오른쪽으로 더 꺾어서 발생하는 경우이므로 대각선 왼쪽으로 조금 진행
+                    if self.was_turning_right:
+                        self.get_logger().warn("차선 탐색중... 최근기록 우회전")
+                        twist.linear.x = 0.2  # 탐색 시에는 속도를 살짝 줄이는 것이 안정적
+                        twist.angular.z = 0.4   # 왼쪽으로 회전 (값 조절 필요)
+
+                        self.mecanum_pub.publish(twist)
+                        self.pid.clear()
 
              
                 if self.objects_info:
