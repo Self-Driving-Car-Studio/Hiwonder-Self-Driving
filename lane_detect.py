@@ -34,6 +34,18 @@ class LaneDetector(object):
         # 현재 활성화된 ROI를 관리하는 변수 추가 ---
         self.active_rois = self.rois_look_ahead # 기본값은 '멀리 보기'
         self.current_mode = "LOOK_AHEAD"      
+
+        if os.environ['DEPTH_CAMERA_TYPE'] == 'ascamera':
+            # rois 값 수정, 중앙에 좀더 집중
+            self.rois = ((300, 330, 0, 320, 0.7), 
+                         (260, 290, 0, 320, 0.2), 
+                         (220, 250, 0, 320, 0.1))
+        else:
+            # rois 값 수정, 중앙에 좀더 집중
+            self.rois = ((380, 420, 0, 320, 0.7),
+                         (320, 360, 0, 320, 0.2),
+                         (260, 300, 0, 320, 0.1))
+
         self.weight_sum = 1.0
 
     # 외부에서 탐색 모드를 변경하는 함수 추가 ---
@@ -244,7 +256,3 @@ if __name__ == '__main__':
     node.create_subscription(Image, '/ascamera/camera_publisher/rgb0/image', image_callback, 1)
     threading.Thread(target=main, daemon=True).start()
     rclpy.spin(node)
-
-
-
-
