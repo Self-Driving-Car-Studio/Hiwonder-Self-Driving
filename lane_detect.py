@@ -21,6 +21,20 @@ class LaneDetector(object):
         # lane color
         self.target_color = color
         # ROI for lane detection
+
+        # '가까이 보기' 모드: 기존의 하단 집중 ROI (우회전 및 차선 탐색용)
+        # '멀리 보기' 모드: 중앙 주행 시 안정성을 위한 ROI
+        if os.environ.get('DEPTH_CAMERA_TYPE') == 'ascamera':
+            self.rois_close_up = ((338, 360, 0, 320, 0.7), (292, 315, 0, 320, 0.2), (248, 270, 0, 320, 0.1))
+            self.rois_look_ahead = ((300, 330, 0, 320, 0.7), (260, 290, 0, 320, 0.2), (220, 250, 0, 320, 0.1))
+        else:
+            self.rois_close_up = ((450, 480, 0, 320, 0.7), (390, 480, 0, 320, 0.2), (330, 480, 0, 320, 0.1))
+            self.rois_look_ahead = ((380, 420, 0, 320, 0.7), (320, 360, 0, 320, 0.2), (260, 300, 0, 320, 0.1))
+
+        # 현재 활성화된 ROI를 관리하는 변수 추가 ---
+        self.active_rois = self.rois_look_ahead # 기본값은 '멀리 보기'
+        self.current_mode = "LOOK_AHEAD"      
+
         if os.environ['DEPTH_CAMERA_TYPE'] == 'ascamera':
             # rois 값 수정, 중앙에 좀더 집중
             self.rois = ((300, 330, 0, 320, 0.7), 
@@ -31,11 +45,24 @@ class LaneDetector(object):
             self.rois = ((380, 420, 0, 320, 0.7),
                          (320, 360, 0, 320, 0.2),
                          (260, 300, 0, 320, 0.1))
-        
+
         self.weight_sum = 1.0
 
+    # 외부에서 탐색 모드를 변경하는 함수 추가 ---
+    def set_mode(self, mode):
+        if mode == "close_up":
+            self.active_rois = self.rois_close_up
+            self.current_mode = "CLOSE_UP"
+        else: # 기본값은 "look_ahead"
+            self.active_rois = self.rois_look_ahead
+            self.current_mode = "LOOK_AHEAD"
+
+
+
     def set_roi(self, roi):
-        self.rois = roi
+        self.rois_close_up = roi
+        self.active_rois = roi
+        self.current_mode = "CUSTOM"
 
     @staticmethod
     def get_area_max_contour(contours, threshold=100):
@@ -143,7 +170,7 @@ class LaneDetector(object):
         h, w = image.shape[:2]
         max_center_x = -1
         center_x = []
-        for roi in self.rois:
+        for roi in self.active_rois:
             blob = image[roi[0]:roi[1], roi[2]:roi[3]]  # crop ROI
             contours = cv2.findContours(blob, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_TC89_L1)[-2]  # find contours
             max_contour_area = self.get_area_max_contour(contours, 30)  # obtain the contour with the largest area
@@ -168,7 +195,7 @@ class LaneDetector(object):
             if center_x[i] != -1:
                 if center_x[i] > max_center_x:
                     max_center_x = center_x[i]
-                centroid_sum += center_x[i] * self.rois[i][-1]
+                centroid_sum += center_x[i] * self.active_rois[i][-1] # self.rois 수정 -> self.active_rois
         if centroid_sum == 0:
             return result_image, None, max_center_x
         center_pos = centroid_sum / self.weight_sum  # calculate the center point based on the proportion
