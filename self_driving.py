@@ -284,6 +284,11 @@ class SelfDrivingNode(Node):
                 # ### [추가] LED 상태 제어 로직 ###
                  # [수정] LED 상태 제어 로직 (우선순위 적용)
                 # 우선순위 0: 주차 완료
+<<<<<<< HEAD
+=======
+                self.set_led_color(1, 0, 255, 0) # 초록색
+                self.set_led_color(2, 0, 255, 0) # 초록색
+>>>>>>> main
                 if self.parking_completed:
                     self.set_led_color(1, 0, 0, 0) # 끄기
                     self.set_led_color(2, 0, 0, 0) # 끄기
