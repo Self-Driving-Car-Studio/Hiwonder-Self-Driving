@@ -37,7 +37,7 @@ class SelfDrivingNode(Node):
         self.pid = pid.PID(0.2, 0.0, 0.1) # D 제어부분 0.1 로 증가
         self.turn_pid = pid.PID(0.2, 0.0, 0.4) # 일반pid 와 turn 전용 pid 구분, turn 의 D부분을 올림
   
-        self.param_init()
+        self.param_init() # 모든 상태변수 초기화
 
         self.fps = fps.FPS()
         self.image_queue = queue.Queue(maxsize=2)
@@ -153,9 +153,9 @@ class SelfDrivingNode(Node):
         self.crosswalk_length = 0.1 + 0.3  # the length of zebra crossing and the robot
 
         self.start_slow_down = False  # slowing down sign
-        self.normal_speed = 0.6 # normal driving speed
-        self.slow_down_speed = 0.5  # slowing down speed
-        self.cornering_speed = 0.3 # 코너링 스피드 ( 미리 진입하기 전부터 작동 )
+        self.normal_speed = 0.4 # normal driving speed # 횡단보도 인식을 위해 줄이는중..
+        self.slow_down_speed = 0.2  # slowing down speed
+        self.cornering_speed = 0.2 # 코너링 스피드 ( 미리 진입하기 전부터 작동 )
 
         self.traffic_signs_status = None  # record the state of the traffic lights
         self.red_loss_count = 0
@@ -165,6 +165,13 @@ class SelfDrivingNode(Node):
         self.objects_info = []
         # [추가] "주차 완료" 상태를 초기화합니다.
         self.parking_completed = False
+
+        # 추가 - crosswalk 를 인식하고 정지하기 위한 변수선언 
+        self.target_crosswalk = None # 정지 목표가 되는 횡단보도 객체 정보
+        self.passed_first_crosswalk = False # 첫 번째 횡단보도를 통과했는지 여부
+        self.stop_for_crosswalk_start_time = 0 # 횡단보도 앞 정지 시작 시간
+        self.is_passing_intersection = False  # 현재 교차로를 통과/진행 중인지 여부
+        self.crosswalk_disappear_counter = 0  # 횡단보도가 안 보이기 시작한 프레임 수
 
     def get_node_state(self, request, response):
         response.success = True
@@ -180,7 +187,7 @@ class SelfDrivingNode(Node):
         self.get_logger().info('\033[1;32m%s\033[0m' % "self driving enter")
         with self.lock:
             self.start = False
-            camera = 'depth_cam'#self.get_parameter('depth_camera_name').value
+            camera = 'depth_cam' #self.get_parameter('depth_camera_name').value
             self.create_subscription(Image, '/ascamera/camera_publisher/rgb0/image' , self.image_callback, 1)
             self.create_subscription(ObjectsInfo, '/yolov5_ros2/object_detect', self.get_object_callback, 1)
             self.mecanum_pub.publish(Twist())
@@ -319,107 +326,236 @@ class SelfDrivingNode(Node):
 
                 twist = Twist()
 
-                # if detecting the zebra crossing, start to slow down
-                self.get_logger().info('\033[1;33m%s\033[0m' % self.crosswalk_distance)
-                if 200 < self.crosswalk_distance and not self.start_slow_down:  #바꿈 jr 원래값 70 # The robot starts to slow down only when it is close enough to the zebra crossing
-                    self.count_crosswalk += 1
-                    if self.count_crosswalk == 3:  # judge multiple times to prevent false detection
-                        self.count_crosswalk = 0
-                        self.start_slow_down = True  # sign for slowing down
-                        self.count_slow_down = time.time()  # fixing time for slowing down
-                else:  # need to detect continuously, otherwise reset
-                    self.count_crosswalk = 0
+                # 아래코드는 위와 겹치므로 주석처리 / 확정나면 삭제
 
-                # deceleration processing
-                if self.start_slow_down:
+                # if detecting the zebra crossing, start to slow down
+                # 슬로우 다운 모드 필요없어서 주석처리함
+
+                # self.get_logger().info('\033[1;33m%s\033[0m' % self.crosswalk_distance)
+                # if 200 < self.crosswalk_distance and not self.start_slow_down:  #바꿈 jr 원래값 70 # The robot starts to slow down only when it is close enough to the zebra crossing
+                #     self.count_crosswalk += 1
+                #     if self.count_crosswalk == 3:  # judge multiple times to prevent false detection
+                #         self.count_crosswalk = 0
+                #         self.start_slow_down = True  # sign for slowing down
+                #         self.count_slow_down = time.time()  # fixing time for slowing down
+                # else:  # need to detect continuously, otherwise reset
+                #     self.count_crosswalk = 0
+
+                ### 횡단보도 로직 추가
+
+                                # 횡단보도 정지 관련 로직
+
+
+                
+                crosswalk_stop_triggered = False # 차선유지 로직에 쓰임
+
+                # 1. 주요 타겟 횡단보도가 있고, 아직 정지 동작을 시작하지 않았을 때
+                if self.target_crosswalk is not None and self.stop_for_crosswalk_start_time == 0 :
+                    box = self.target_crosswalk.box
+                    area = abs(box[2] - box[0]) * abs(box[3]-box[1])
+                    self.get_logger().info(f"타겟 횡단보도 확인, 면적: {area:.0f}")
+
+                    # 1-1. 면적이 정지 기준을 충족하고, 아직 정지 타이머가 시작되지 않았다면
+                    if self.target_crosswalk.class_name == 'crosswalk' and 25000 > area > 9000 and self.stop_for_crosswalk_start_time == 0:
+                        self.get_logger().info("횡단보도 근접, 정지중..")
+                        self.mecanum_pub.publish(Twist()) # 정지
+                        self.stop_for_crosswalk_start_time = time.time() # 현재 정지한 시간
+                        crosswalk_stop_triggered = True  # 횡단보도 때문에 멈췄다고 True
+                
+                # 2. 횡단보도 앞ㅇ있는 동안 로직
+                # 2. 횡단보도 앞에 정지해 있는 동안의 로직
+                if self.stop_for_crosswalk_start_time > 0: # 현재 멈춰있는 상태인가?
+                    crosswalk_stop_triggered = True # 정지 중이므로 차선유지 로직 비활성화
+                    can_go = False
+                    
                     if self.traffic_signs_status is not None:
-                        area = abs(self.traffic_signs_status.box[0] - self.traffic_signs_status.box[2]) * abs(self.traffic_signs_status.box[1] - self.traffic_signs_status.box[3])
-                        if self.traffic_signs_status.class_name == 'red' and area < 1000:  # If the robot detects a red traffic light, it will stop
+                        if self.traffic_signs_status.class_name == 'green':
+                            self.get_logger().info("Green light detected. Go!")
+                            can_go = True
+                        elif self.traffic_signs_status.class_name == 'red':
+                            self.get_logger().info("Red light detected. Waiting...")
+                            self.mecanum_pub.publish(Twist()) # 정지유지
+                            # crosswalk_stop_triggered = True
+                    else: # 신호등이 없을 때
+                        if time.time() - self.stop_for_crosswalk_start_time > 1.0: # 1초 대기
+                            self.get_logger().info("No traffic light. Go after 1 sec.")
+                            can_go = True
+                        else:
                             self.mecanum_pub.publish(Twist())
-                            self.stop = True
-                        elif self.traffic_signs_status.class_name == 'green':  # If the traffic light is green, the robot will slow down and pass through
-                            twist.linear.x = self.slow_down_speed
-                            self.stop = False
-                    if not self.stop:  # In other cases where the robot is not stopped, slow down the speed and calculate the time needed to pass through the crosswalk. The time needed is equal to the length of the crosswalk divided by the driving speed
-                        twist.linear.x = self.slow_down_speed
-                        if time.time() - self.count_slow_down > self.crosswalk_length / twist.linear.x:
-                            self.start_slow_down = False
-                else:
-                    twist.linear.x = self.normal_speed  # go straight with normal speed
+                            # crosswalk_stop_triggered = True
+                            
+                    if can_go:
+                        self.is_passing_intersection = True # '통과 중' 상태로 전환
+                        self.stop_for_crosswalk_start_time = 0
+
+                # 3. 교차로 통과 완료 및 상태 초기화 로직
+                if self.is_passing_intersection:
+                    current_crosswalks_count = sum(1 for obj in self.objects_info if obj.class_name == 'crosswalk')
+                    if current_crosswalks_count < 2: # 횡단보도가 2개 미만으로 보이면
+                        self.crosswalk_disappear_counter += 1
+                    else:
+                        self.crosswalk_disappear_counter = 0
+                    
+                    if self.crosswalk_disappear_counter > 30: # 약 1초간 횡단보도가 안 보이면
+                        self.get_logger().info("Intersection cleared. Ready for the next one.")
+                        self.is_passing_intersection = False
+                        self.crosswalk_disappear_counter = 0
+
+
+
+
+                # 3. 정지 동작이 시작됐고 1초가 지났을 때
+                # if self.stop_for_crosswalk_start_time > 0 and (time.time() - self.stop_for_crosswalk_start_time > 1.0):
+
+                #     # 1초가 지났고, 신호등 관련
+                #     if self.traffic_signs_status is not None: # 신호등이 감지가 됐다면
+                #         area = abs(self.traffic_signs_status.box[0] - self.traffic_signs_status.box[2]) * abs(self.traffic_signs_status.box[1] - self.traffic_signs_status.box[3])
+                #         if self.traffic_signs_status.class_name == 'red' and area < 1000:  # If the robot detects a red traffic light, it will stop
+                #             self.mecanum_pub.publish(Twist()) #정지
+                #             self.stop = True
+                #         elif self.traffic_signs_status.class_name == 'green':  # If the traffic light is green, the robot will slow down and pass through
+                #             twist.linear.x = self.normal_speed # 노말 스피드로 통과
+                #             self.stop = False
+
+                #             self.get_logger().info("1초 경과, 주행 모드")
+                #             self.passed_first_crosswalk = True # 첫 번째 횡단보도 통과 처리
+                #             self.stop_for_crosswalk_start_time = 0 # 정지 시간 초기화
+
+                            
+                #             # 최종 명령전달
+                #             self.mecanum_pub.publish(Twist()) # (전진)
+                            
+                #             # 첫번째 횡단보도를 지났다면 초기화
+                            
+                #             self.passed_first_crosswalk = False
+                            
+
+                #     # 정지 1초가 지나고 신호등이 없다면        
+                #     else:
+                #         self.get_logger().info("1초 경과, 주행 모드")
+                #         self.passed_first_crosswalk = True # 첫 번째 횡단보도 통과 처리
+                #         self.stop_for_crosswalk_start_time = 0 # 정지 시간 초기화
+                #         twist.linear.x = self.normal_speed  # go straight with normal speed
+
+                #         # 최종 명령전달
+                #         self.mecanum_pub.publish(twist) # (전진)
+                #         # 기존에 publish(Twist()) 였으나,
+                #         # 이는 속도 0을 퍼블리시 하는 객체임.
+
+
+                #         # 첫번째 횡단보도를 지났다면 초기화
+                #         self.passed_first_crosswalk = True
+
+
+
+
+
+
+                # # deceleration processing
+                # # 슬로우 다운이라면 -> 횡단보도가 있다면
+                # if self.start_slow_down:
+
+                #     if self.traffic_signs_status is not None: # 신호등이 감지가 됐다면
+                #         area = abs(self.traffic_signs_status.box[0] - self.traffic_signs_status.box[2]) * abs(self.traffic_signs_status.box[1] - self.traffic_signs_status.box[3])
+                #         if self.traffic_signs_status.class_name == 'red' and area < 1000:  # If the robot detects a red traffic light, it will stop
+                #             self.mecanum_pub.publish(Twist()) #정지
+                #             self.stop = True
+                #         elif self.traffic_signs_status.class_name == 'green':  # If the traffic light is green, the robot will slow down and pass through
+                #             twist.linear.x = self.slow_down_speed # 슬로우다운 스피드로 통과
+                #             self.stop = False
+
+                #     # 신호등이 없다면
+                #     if not self.stop:  # In other cases where the robot is not stopped, slow down the speed and calculate the time needed to pass through the crosswalk. The time needed is equal to the length of the crosswalk divided by the driving speed
+                #         twist.linear.x = self.slow_down_speed
+                #         if time.time() - self.count_slow_down > self.crosswalk_length / twist.linear.x:
+                #             self.start_slow_down = False
+
+                # # 슬로우 다운이 아니라면 -> 횡단보도가 없다면 ( 일반주행 )
+                # else:
+                #     twist.linear.x = self.normal_speed  # go straight with normal speed
 
                 # If the robot detects a stop sign and a crosswalk, it will slow down to ensure stable recognition
-                if 0 < self.park_x and 135 < self.crosswalk_distance:
-                    twist.linear.x = self.slow_down_speed
-                    if not self.start_park and 180 < self.crosswalk_distance:  # When the robot is close enough to the crosswalk, it will start parking
-                        self.count_park += 1
-                        if self.count_park >= 15:
-                            self.mecanum_pub.publish(Twist())
-                            self.start_park = True
-                            self.stop = True
-                            threading.Thread(target=self.park_action).start()
-                    else:
-                        self.count_park = 0
+                # 거리는 안쓰니까 주석
+                # if 0 < self.park_x and 135 < self.crosswalk_distance:
+                #     twist.linear.x = self.slow_down_speed
+                #     if not self.start_park and 180 < self.crosswalk_distance:  # When the robot is close enough to the crosswalk, it will start parking
+                #         self.count_park += 1
+                #         if self.count_park >= 15:
+                #             self.mecanum_pub.publish(Twist())
+                #             self.start_park = True
+                #             self.stop = True
+                #             threading.Thread(target=self.park_action).start()
+                #     else:
+                #         self.count_park = 0
 
-                # line following processing
-                result_image, lane_angle, lane_x = self.lane_detect(binary_image, image.copy())  # the coordinate of the line while the robot is in the middle of the lane
-                if lane_x >= 0 and not self.stop:
-                    
 
-                    if lane_x > 180: # 1순위 코너감지, 턴 시작
+
+                # 횡단보도 때문에 안 멈췄다면 ( False 가 아니라면 / 기본값 False)
+                if not crosswalk_stop_triggered: 
+
+
+                    # line following processing
+                    result_image, lane_angle, lane_x = self.lane_detect(binary_image, image.copy())  # the coordinate of the line while the robot is in the middle of the lane
+                    if lane_x >= 0 and not self.stop:
                         
-                        # 우회전으로 판단하고 mode 전환
+
+                        if lane_x > 180: # 1순위 코너감지, 턴 시작
+                            
+                            # 우회전으로 판단하고 mode 전환
+                            self.lane_detect.set_mode("close_up")
+
+                            self.count_turn += 1
+                            if self.count_turn > 5 and not self.start_turn:
+                                self.start_turn = True
+                                self.count_turn = 0
+                                self.start_turn_time_stamp = time.time()
+                            if self.machine_type != 'MentorPi_Acker':
+                                twist.linear.x = self.cornering_speed # 코너링 속도
+                                twist.angular.z = -1.2   # turning speed
+                            else:
+                                twist.angular.z = twist.linear.x * math.tan(-0.5061) / 0.145
+
+                        elif lane_x > 150: # 코너링 미리 감지하고 준비 ( 속도감소 ) - 2순위
+                            twist.linear.x = self.cornering_speed
+                            # 감속 중에도 PID 제어는 유지
+                            self.pid.SetPoint = 130 
+                            self.pid.update(lane_x)
+                            twist.angular.z = -common.set_range(self.pid.output, -0.3, 0.3)
+
+                        else:  # use PID algorithm to correct turns on a straight road
+
+                            # 직진으로 판단하고 mode전환
+                            # 항상 턴 돌고 횡단보도를 인식못하는 문제 발생 잠깐 슬로우 모드 넣어야할듯
+                            self.lane_detect.set_mode("look_ahead")
+                            twist.linear.x = self.normal_speed # 일반 속도
+                            
+
+
+                            self.count_turn = 0
+                            if time.time() - self.start_turn_time_stamp > 2 and self.start_turn:
+                                self.start_turn = False
+                            if not self.start_turn:
+                                self.pid.SetPoint = 130  # the coordinate of the line while the robot is in the middle of the lane
+                                self.pid.update(lane_x)
+                                if self.machine_type != 'MentorPi_Acker':
+                                    twist.angular.z = common.set_range(self.pid.output, -0.1, 0.1)
+                                else:
+                                    twist.angular.z = twist.linear.x * math.tan(common.set_range(self.pid.output, -0.1, 0.1)) / 0.145
+                            else:
+                                if self.machine_type == 'MentorPi_Acker':
+                                    twist.angular.z = 0.15 * math.tan(-0.5061) / 0.145
+                        self.mecanum_pub.publish(twist)
+                    else:
+                        # 차선인식 못한 경우
                         self.lane_detect.set_mode("close_up")
 
-                        self.count_turn += 1
-                        if self.count_turn > 5 and not self.start_turn:
-                            self.start_turn = True
-                            self.count_turn = 0
-                            self.start_turn_time_stamp = time.time()
-                        if self.machine_type != 'MentorPi_Acker':
-                            twist.linear.x = self.cornering_speed # 코너링 속도
-                            twist.angular.z = -1.2   # turning speed
-                        else:
-                            twist.angular.z = twist.linear.x * math.tan(-0.5061) / 0.145
+                        # 느린 명령주면서 차선 찾기
+                        recovery_twist = Twist()
+                        recovery_twist.linear.x = 0.1  # 느린 속도로
+                        recovery_twist.angular.z = 0.4   # 왼쪽으로 살짝 회전
+                        self.mecanum_pub.publish(recovery_twist)
 
-                    elif lane_x > 150: # 코너링 미리 감지하고 준비 ( 속도감소 ) - 2순위
-                        twist.linear.x = self.cornering_speed
-                        # 감속 중에도 PID 제어는 유지
-                        self.pid.SetPoint = 130 
-                        self.pid.update(lane_x)
-                        twist.angular.z = -common.set_range(self.pid.output, -0.3, 0.3)
-
-                    else:  # use PID algorithm to correct turns on a straight road
-
-                        # 직진으로 판단하고 mode전환
-                        self.lane_detect.set_mode("look_ahead")
-                        twist.linear.x = self.normal_speed # 일반 속도
-
-
-                        self.count_turn = 0
-                        if time.time() - self.start_turn_time_stamp > 2 and self.start_turn:
-                            self.start_turn = False
-                        if not self.start_turn:
-                            self.pid.SetPoint = 130  # the coordinate of the line while the robot is in the middle of the lane
-                            self.pid.update(lane_x)
-                            if self.machine_type != 'MentorPi_Acker':
-                                twist.angular.z = common.set_range(self.pid.output, -0.1, 0.1)
-                            else:
-                                twist.angular.z = twist.linear.x * math.tan(common.set_range(self.pid.output, -0.1, 0.1)) / 0.145
-                        else:
-                            if self.machine_type == 'MentorPi_Acker':
-                                twist.angular.z = 0.15 * math.tan(-0.5061) / 0.145
-                    self.mecanum_pub.publish(twist)
-                else:
-                    # 차선인식 못한 경우
-                    self.lane_detect.set_mode("close_up")
-
-                    # 느린 명령주면서 차선 찾기
-                    recovery_twist = Twist()
-                    recovery_twist.linear.x = 0.1  # 느린 속도로
-                    recovery_twist.angular.z = 0.4   # 왼쪽으로 살짝 회전
-                    self.mecanum_pub.publish(recovery_twist)
-
-                    self.pid.clear()
+                        self.pid.clear()
 
              
                 if self.objects_info:
@@ -465,32 +601,103 @@ class SelfDrivingNode(Node):
     # Obtain the target detection result
     def get_object_callback(self, msg):
         self.objects_info = msg.objects
-        if self.objects_info == []:  # If it is not recognized, reset the variable
-            self.traffic_signs_status = None
-            self.crosswalk_distance = 0
-        else:
-            min_distance = 0
-            for i in self.objects_info:
-                class_name = i.class_name
-                center = (int((i.box[0] + i.box[2])/2), int((i.box[1] + i.box[3])/2))
+
+        # 이번 프레임의 타겟 횡단보도를 초기화
+        self.target_crosswalk = None 
+        self.traffic_signs_status = None
+
+        # 2. 객체 리스트를 한 번만 순회하며 필요한 정보를 모두 추출
+        crosswalks_detected = []
+        for obj in self.objects_info:
+            if obj.class_name == 'crosswalk':
+                crosswalks_detected.append(obj)
+            elif obj.class_name in ['red', 'green']:
+                # Red 신호를 더 높은 우선순위로 처리
+                if self.traffic_signs_status is None or self.traffic_signs_status.class_name == 'green':
+                    self.traffic_signs_status = obj
+
+        # 3. 추출된 정보를 바탕으로 최종 판단
+        # "교차로를 통과 중이 아닐 때" 그리고 "횡단보도가 2개 이상 보일 때"만 타겟 설정
+        if not self.is_passing_intersection and len(crosswalks_detected) >= 1:
+            # # 가장 큰 횡단보도를 타겟으로 설정
+            # self.target_crosswalk = max(crosswalks_detected, key=lambda cw: abs(cw.box[2] - cw.box[0]) * abs(cw.box[3] - cw.box[1]))
+             # --- 핵심 수정: 면적이 가장 큰'이 아니라 'y좌표가 가장 큰(가장 가까운)' 횡단보도를 타겟으로 설정 ---
+            self.target_crosswalk = max(crosswalks_detected, key=lambda cw: (cw.box[1] + cw.box[3]) / 2)
+
+
+
+        # if self.objects_info == []:  # If it is not recognized, reset the variable
+        #     pass
+        #    # self.crosswalk_distance = 0  # 거리 노필요
+        # else:
+        #     # min_distance = 0 # 거리 노필요
+        #     for i in self.objects_info:
+        #         class_name = i.class_name
+        #         center = (int((i.box[0] + i.box[2])/2), int((i.box[1] + i.box[3])/2))
                 
-                if class_name == 'crosswalk':
-                    if center[1] > min_distance:  # Obtain recent y-axis pixel coordinate of the crosswalk
-                        min_distance = center[1]
-                elif class_name == 'right':  # obtain the right turning sign
-                    self.count_right += 1
-                    self.count_right_miss = 0
-                    if self.count_right >= 5:  # If it is detected multiple times, take the right turning sign to true
-                        self.turn_right = True
-                        self.count_right = 0
-                elif class_name == 'park':  # obtain the center coordinate of the parking sign
-                    self.park_x = center[0]
-                elif class_name == 'red' or class_name == 'green':  # obtain the status of the traffic light
-                    self.traffic_signs_status = i
+        #         if class_name == 'crosswalk':
+        #             # 횡단보도 부분
+        #             crosswalks = [obj for obj in self.objects_info] # if obj.class_name == 'crosswalk']
+        #             if len(crosswalks) >= 2 and not self.passed_first_crosswalk:
+                
+        #                 # 가장 큰 바운딩 박스를 가진 횡단보도를 찾는다
+        #                 largest_crosswalk = None
+        #                 max_area = 0
+        #                 for cw in crosswalks:
+        #                     box = cw.box
+        #                     area = abs(box[2] - box[0]) * abs(box[3] - box[1])
+        #                     if area > max_area:
+        #                         max_area = area
+        #                         largest_crosswalk = cw
+                        
+        #                 # 찾은 횡단보도를 이번 프레임의 "주요 타겟"으로 설정
+        #                 self.target_crosswalk = largest_crosswalk
+
+        #             # 횡단보도 부분 추가했으므로 이 로직 주석처리
+        #             # if center[1] > min_distance:  # Obtain recent y-axis pixel coordinate of the crosswalk
+        #             #     min_distance = center[1]
+                
+        #         elif class_name == 'right':  # obtain the right turning sign
+        #             self.count_right += 1
+        #             self.count_right_miss = 0
+        #             if self.count_right >= 5:  # If it is detected multiple times, take the right turning sign to true
+        #                 self.turn_right = True
+        #                 self.count_right = 0
+        #         elif class_name == 'park':  # obtain the center coordinate of the parking sign
+        #             self.park_x = center[0]
+        #         elif class_name == 'red' or class_name == 'green':  # obtain the status of the traffic light
+        #             self.traffic_signs_status = i
                
 
-            self.get_logger().info('\033[1;32m%s\033[0m' % class_name)
-            self.crosswalk_distance = min_distance
+        #     self.get_logger().info('\033[1;32m%s\033[0m' % class_name)
+        #     # self.crosswalk_distance = min_distance # 거리 노필요
+        
+
+        # 위 코드 활용하기 위해 추가했던 코드 주석처리
+        # 횡단보도 관련 콜백 변수들 추가
+            # 1. 횡단보도 객체만 따로 리스트에 저장
+            # crosswalks = [obj for obj in self.objects_info if obj.class_name == 'crosswalk']
+            
+            
+            
+            # # . 조건 확인: 횡단보도가 2개 이상이고, 아직 첫 번째 횡단보도를 통과하기 전인가?
+            # if len(crosswalks) >= 2 and not self.passed_first_crosswalk:
+                
+            #     # 가장 큰 바운딩 박스를 가진 횡단보도를 찾는다
+            #     largest_crosswalk = None
+            #     max_area = 0
+            #     for cw in crosswalks:
+            #         box = cw.box
+            #         area = abs(box[2] - box[0]) * abs(box[3] - box[1])
+            #         if area > max_area:
+            #             max_area = area
+            #             largest_crosswalk = cw
+                
+            #     # 찾은 횡단보도를 이번 프레임의 "주요 타겟"으로 설정
+                # self.target_crosswalk = largest_crosswalk
+
+            # (신호등 등 다른 객체 정보 처리 로직은 필요시 여기에 추가)
+            # 예시: self.traffic_signs_status = next((obj for obj in self.objects_info if obj.class_name in ['red', 'green']), None)
 
 def main():
     node = SelfDrivingNode('self_driving')
