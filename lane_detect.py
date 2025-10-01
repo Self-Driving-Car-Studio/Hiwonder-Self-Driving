@@ -294,7 +294,7 @@ if __name__ == '__main__':
     from sensor_msgs.msg import Image
     rclpy.init()
     node = rclpy.create_node('lane_detect')
-    lane_detect = LaneDetector('yellow')
+    lane_detect = LaneDetector('yellow', node.get_logger())
     node.create_subscription(Image, '/ascamera/camera_publisher/rgb0/image', image_callback, 1)
     threading.Thread(target=main, daemon=True).start()
     rclpy.spin(node)
