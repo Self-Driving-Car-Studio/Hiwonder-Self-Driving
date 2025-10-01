@@ -34,8 +34,8 @@ class SelfDrivingNode(Node):
         self.name = name
         self.is_running = True
 
-        self.pid = pid.PID(0.2, 0.0, 0.1) # D 제어부분 0.1 로 증가
-        self.turn_pid = pid.PID(0.2, 0.0, 0.4) # 일반pid 와 turn 전용 pid 구분, turn 의 D부분을 올림
+        self.pid = pid.PID(0.1, 0.0, 0.1) # D 제어부분 0.1 로 증가
+        self.turn_pid = pid.PID(0.1, 0.0, 0.4) # 일반pid 와 turn 전용 pid 구분, turn 의 D부분을 올림
   
         self.param_init() # 모든 상태변수 초기화
 
@@ -129,6 +129,7 @@ class SelfDrivingNode(Node):
         self.start = False
         self.enter = False
         self.right = True
+        self.first = True  # for warm-up
 
         self.have_turn_right = False
         self.detect_turn_right = False
@@ -153,9 +154,9 @@ class SelfDrivingNode(Node):
         self.crosswalk_length = 0.1 + 0.3  # the length of zebra crossing and the robot
 
         self.start_slow_down = False  # slowing down sign
-        self.normal_speed = 0.4 # normal driving speed # 횡단보도 인식을 위해 줄이는중..
-        self.slow_down_speed = 0.2  # slowing down speed
-        self.cornering_speed = 0.2 # 코너링 스피드 ( 미리 진입하기 전부터 작동 )
+        self.normal_speed = 0.3 # normal driving speed # 횡단보도 인식을 위해 줄이는중..
+        self.slow_down_speed = 0.15  # slowing down speed
+        self.cornering_speed = 0.15 # 코너링 스피드 ( 미리 진입하기 전부터 작동 )
 
         self.traffic_signs_status = None  # record the state of the traffic lights
         self.red_loss_count = 0
@@ -226,13 +227,17 @@ class SelfDrivingNode(Node):
         self.is_running = False
 
     def image_callback(self, ros_image):  # callback target checking
+        ### 시간 측정 시작 ###
+        reception_time = time.time()
+        ### 시간 측정 종료 ###
+
         cv_image = self.bridge.imgmsg_to_cv2(ros_image, "rgb8")
         rgb_image = np.array(cv_image, dtype=np.uint8)
         if self.image_queue.full():
             # if the queue is full, remove the oldest image
             self.image_queue.get()
         # put the image into the queue
-        self.image_queue.put(rgb_image)
+        self.image_queue.put((rgb_image, reception_time))
     
     # parking processing
     def park_action(self):
@@ -282,14 +287,41 @@ class SelfDrivingNode(Node):
 
     def main(self):
         while self.is_running:
-            time_start = time.time()
-            try:
-                image = self.image_queue.get(block=True, timeout=1)
-            except queue.Empty:
-                if not self.is_running:
-                    break
-                else:
+            
+            # --- 워밍업 루틴 추가 ---
+            if self.first:
+                self.get_logger().info("Starting warm-up routine...")
+                # 가짜 이미지 생성 (실제 카메라 해상도와 동일하게)
+                dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
+                # 주요 연산 함수를 미리 호출하여 예열
+                for _ in range(5): # 5번 정도 반복
+                    _ = self.lane_detect.get_binary(dummy_image)
+                self.get_logger().info("Warm-up finished.")
+                self.first = False
+                # --- 워밍업 끝 ---
+
+            time_start = time.time() # 루프 시작 시간
+            
+            items_in_queue = [] 
+            # 1. 큐가 빌 때까지 모든 항목을 꺼내서 임시 리스트에 담습니다. (줄 세워 내보내기)
+            while not self.image_queue.empty():
+                try:
+                    items_in_queue.append(self.image_queue.get_nowait())
+                except queue.Empty:
                     continue
+            
+            # 2. 임시 리스트가 비어있으면 처리할 게 없으므로 건너뜁니다.
+            if not items_in_queue:
+                time.sleep(0.001)
+                continue
+
+            image, reception_time = items_in_queue[-1]
+
+            ### 시간 측정 시작 ###
+            # 큐 대기 시간 측정
+            queue_wait_time = (time_start - reception_time) * 1000 # ms
+            t1 = time.time()
+            ### 시간 측정 종료 ###
 
             result_image = image.copy()
             if self.start:
@@ -323,6 +355,7 @@ class SelfDrivingNode(Node):
 
                 # obtain the binary image of the lane
                 binary_image = self.lane_detect.get_binary(image)
+                t2 = time.time()
 
                 twist = Twist()
 
@@ -345,22 +378,20 @@ class SelfDrivingNode(Node):
 
                                 # 횡단보도 정지 관련 로직
 
-
+                t3_start = time.time()
                 
                 crosswalk_stop_triggered = False # 차선유지 로직에 쓰임
 
                 # 1. 주요 타겟 횡단보도가 있고, 아직 정지 동작을 시작하지 않았을 때
                 if self.target_crosswalk is not None and self.stop_for_crosswalk_start_time == 0 :
-                    box = self.target_crosswalk.box
-                    area = abs(box[2] - box[0]) * abs(box[3]-box[1])
-                    self.get_logger().info(f"타겟 횡단보도 확인, 면적: {area:.0f}")
-
                     # 1-1. 면적이 정지 기준을 충족하고, 아직 정지 타이머가 시작되지 않았다면
-                    if self.target_crosswalk.class_name == 'crosswalk' and 25000 > area > 9000 and self.stop_for_crosswalk_start_time == 0:
+                    if self.target_crosswalk.box[3] > 480 * 0.6:
                         self.get_logger().info("횡단보도 근접, 정지중..")
                         self.mecanum_pub.publish(Twist()) # 정지
                         self.stop_for_crosswalk_start_time = time.time() # 현재 정지한 시간
                         crosswalk_stop_triggered = True  # 횡단보도 때문에 멈췄다고 True
+
+                t3_end = time.time()
                 
                 # 2. 횡단보도 앞ㅇ있는 동안 로직
                 # 2. 횡단보도 앞에 정지해 있는 동안의 로직
@@ -391,7 +422,7 @@ class SelfDrivingNode(Node):
                 # 3. 교차로 통과 완료 및 상태 초기화 로직
                 if self.is_passing_intersection:
                     current_crosswalks_count = sum(1 for obj in self.objects_info if obj.class_name == 'crosswalk')
-                    if current_crosswalks_count < 2: # 횡단보도가 2개 미만으로 보이면
+                    if current_crosswalks_count < 1: # 횡단보도가 2개 미만으로 보이면
                         self.crosswalk_disappear_counter += 1
                     else:
                         self.crosswalk_disappear_counter = 0
@@ -488,7 +519,10 @@ class SelfDrivingNode(Node):
                 #     else:
                 #         self.count_park = 0
 
-
+                ### 시간 측정 시작 ###
+                # 2. 차선 인식 및 제어 로직 시간 측정
+                t3_start = time.time()
+                ### 시간 측정 종료 ###
 
                 # 횡단보도 때문에 안 멈췄다면 ( False 가 아니라면 / 기본값 False)
                 if not crosswalk_stop_triggered: 
@@ -511,7 +545,7 @@ class SelfDrivingNode(Node):
                                 self.start_turn_time_stamp = time.time()
                             if self.machine_type != 'MentorPi_Acker':
                                 twist.linear.x = self.cornering_speed # 코너링 속도
-                                twist.angular.z = -1.2   # turning speed
+                                twist.angular.z = -1.0   # turning speed
                             else:
                                 twist.angular.z = twist.linear.x * math.tan(-0.5061) / 0.145
 
@@ -556,7 +590,15 @@ class SelfDrivingNode(Node):
                         self.mecanum_pub.publish(recovery_twist)
 
                         self.pid.clear()
-
+                
+                ### 시간 측정 시작 ###
+                t3_end = time.time()
+                ### 시간 측정 종료 ###
+                
+                ### 시간 측정 시작 ###
+                # 3. 결과 이미지 처리 시간 측정
+                t4_start = time.time()
+                ### 시간 측정 종료 ###
              
                 if self.objects_info:
                     for i in self.objects_info:
@@ -571,6 +613,10 @@ class SelfDrivingNode(Node):
                             color=color,
                             label="{}:{:.2f}".format(class_name, cls_conf),
                         )
+
+                ### 시간 측정 시작 ###
+                t4_end = time.time()
+                ### 시간 측정 종료 ###
 
             else:
                 # [수정] 주행이 끝나면 (self.start가 False이면) 모든 불을 끕니다.
@@ -587,7 +633,25 @@ class SelfDrivingNode(Node):
             
             self.result_publisher.publish(self.bridge.cv2_to_imgmsg(bgr_image, "bgr8"))
 
-           
+            ### 시간 측정 시작 ###
+            # 최종 로깅
+            loop_end_time = time.time()
+            total_loop_time = (loop_end_time - time_start) * 1000     
+
+            if self.start:
+                preprocessing_time = (t2 - t1) * 1000
+                lane_logic_time = (t3_end - t3_start) * 1000
+                drawing_time = (t4_end - t4_start) * 1000
+            
+            self.get_logger().info(
+                f'[PERF] Total: {total_loop_time:.2f}ms | '
+                f'QueueWait: {queue_wait_time:.2f}ms | '
+                f'Preproc: {preprocessing_time:.2f}ms | '
+                f'LaneLogic: {lane_logic_time:.2f}ms | '
+                f'Drawing: {drawing_time:.2f}ms'
+            )
+            ### 시간 측정 종료 ###
+
             time_d = 0.03 - (time.time() - time_start)
             if time_d > 0:
                 time.sleep(time_d)
@@ -600,6 +664,10 @@ class SelfDrivingNode(Node):
 
     # Obtain the target detection result
     def get_object_callback(self, msg):
+        ### 시간 측정 시작 ###
+        callback_start_time = time.time()
+        ### 시간 측정 종료 ###
+
         self.objects_info = msg.objects
 
         # 이번 프레임의 타겟 횡단보도를 초기화
@@ -618,7 +686,7 @@ class SelfDrivingNode(Node):
 
         # 3. 추출된 정보를 바탕으로 최종 판단
         # "교차로를 통과 중이 아닐 때" 그리고 "횡단보도가 2개 이상 보일 때"만 타겟 설정
-        if not self.is_passing_intersection and len(crosswalks_detected) >= 1:
+        if not self.is_passing_intersection and len(crosswalks_detected) >= 2:
             # # 가장 큰 횡단보도를 타겟으로 설정
             # self.target_crosswalk = max(crosswalks_detected, key=lambda cw: abs(cw.box[2] - cw.box[0]) * abs(cw.box[3] - cw.box[1]))
              # --- 핵심 수정: 면적이 가장 큰'이 아니라 'y좌표가 가장 큰(가장 가까운)' 횡단보도를 타겟으로 설정 ---
@@ -626,78 +694,10 @@ class SelfDrivingNode(Node):
 
 
 
-        # if self.objects_info == []:  # If it is not recognized, reset the variable
-        #     pass
-        #    # self.crosswalk_distance = 0  # 거리 노필요
-        # else:
-        #     # min_distance = 0 # 거리 노필요
-        #     for i in self.objects_info:
-        #         class_name = i.class_name
-        #         center = (int((i.box[0] + i.box[2])/2), int((i.box[1] + i.box[3])/2))
-                
-        #         if class_name == 'crosswalk':
-        #             # 횡단보도 부분
-        #             crosswalks = [obj for obj in self.objects_info] # if obj.class_name == 'crosswalk']
-        #             if len(crosswalks) >= 2 and not self.passed_first_crosswalk:
-                
-        #                 # 가장 큰 바운딩 박스를 가진 횡단보도를 찾는다
-        #                 largest_crosswalk = None
-        #                 max_area = 0
-        #                 for cw in crosswalks:
-        #                     box = cw.box
-        #                     area = abs(box[2] - box[0]) * abs(box[3] - box[1])
-        #                     if area > max_area:
-        #                         max_area = area
-        #                         largest_crosswalk = cw
-                        
-        #                 # 찾은 횡단보도를 이번 프레임의 "주요 타겟"으로 설정
-        #                 self.target_crosswalk = largest_crosswalk
-
-        #             # 횡단보도 부분 추가했으므로 이 로직 주석처리
-        #             # if center[1] > min_distance:  # Obtain recent y-axis pixel coordinate of the crosswalk
-        #             #     min_distance = center[1]
-                
-        #         elif class_name == 'right':  # obtain the right turning sign
-        #             self.count_right += 1
-        #             self.count_right_miss = 0
-        #             if self.count_right >= 5:  # If it is detected multiple times, take the right turning sign to true
-        #                 self.turn_right = True
-        #                 self.count_right = 0
-        #         elif class_name == 'park':  # obtain the center coordinate of the parking sign
-        #             self.park_x = center[0]
-        #         elif class_name == 'red' or class_name == 'green':  # obtain the status of the traffic light
-        #             self.traffic_signs_status = i
-               
-
-        #     self.get_logger().info('\033[1;32m%s\033[0m' % class_name)
-        #     # self.crosswalk_distance = min_distance # 거리 노필요
-        
-
-        # 위 코드 활용하기 위해 추가했던 코드 주석처리
-        # 횡단보도 관련 콜백 변수들 추가
-            # 1. 횡단보도 객체만 따로 리스트에 저장
-            # crosswalks = [obj for obj in self.objects_info if obj.class_name == 'crosswalk']
-            
-            
-            
-            # # . 조건 확인: 횡단보도가 2개 이상이고, 아직 첫 번째 횡단보도를 통과하기 전인가?
-            # if len(crosswalks) >= 2 and not self.passed_first_crosswalk:
-                
-            #     # 가장 큰 바운딩 박스를 가진 횡단보도를 찾는다
-            #     largest_crosswalk = None
-            #     max_area = 0
-            #     for cw in crosswalks:
-            #         box = cw.box
-            #         area = abs(box[2] - box[0]) * abs(box[3] - box[1])
-            #         if area > max_area:
-            #             max_area = area
-            #             largest_crosswalk = cw
-                
-            #     # 찾은 횡단보도를 이번 프레임의 "주요 타겟"으로 설정
-                # self.target_crosswalk = largest_crosswalk
-
-            # (신호등 등 다른 객체 정보 처리 로직은 필요시 여기에 추가)
-            # 예시: self.traffic_signs_status = next((obj for obj in self.objects_info if obj.class_name in ['red', 'green']), None)
+        callback_end_time = time.time()
+        processing_time = (callback_end_time - callback_start_time) * 1000  # 밀리초(ms) 단위
+        self.get_logger().info(f'[PERF] Object callback processing time: {processing_time:.2f} ms')
+        ### 시간 측정 종료 ###
 
 def main():
     node = SelfDrivingNode('self_driving')
