@@ -296,5 +296,5 @@ if __name__ == '__main__':
     node = rclpy.create_node('lane_detect')
     lane_detect = LaneDetector('yellow', node.get_logger())
     node.create_subscription(Image, '/ascamera/camera_publisher/rgb0/image', image_callback, 1)
-    threading.Thread(target=main, daemon=True).start()
+    threading.Thread(target=main, args=(lane_detect,), daemon=True).start()
     rclpy.spin(node)
