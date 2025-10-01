@@ -226,13 +226,17 @@ class SelfDrivingNode(Node):
         self.is_running = False
 
     def image_callback(self, ros_image):  # callback target checking
+        ### 시간 측정 시작 ###
+        reception_time = time.time()
+        ### 시간 측정 종료 ###
+
         cv_image = self.bridge.imgmsg_to_cv2(ros_image, "rgb8")
         rgb_image = np.array(cv_image, dtype=np.uint8)
         if self.image_queue.full():
             # if the queue is full, remove the oldest image
             self.image_queue.get()
         # put the image into the queue
-        self.image_queue.put(rgb_image)
+        self.image_queue.put((rgb_image, reception_time))
     
     # parking processing
     def park_action(self):
@@ -282,14 +286,20 @@ class SelfDrivingNode(Node):
 
     def main(self):
         while self.is_running:
-            time_start = time.time()
+            time_start = time.time() # 루프 시작 시간
             try:
-                image = self.image_queue.get(block=True, timeout=1)
+                image, reception_time = self.image_queue.get(block=True, timeout=1)
             except queue.Empty:
                 if not self.is_running:
                     break
                 else:
                     continue
+
+            ### 시간 측정 시작 ###
+            # 큐 대기 시간 측정
+            queue_wait_time = (time_start - reception_time) * 1000 # ms
+            t1 = time.time()
+            ### 시간 측정 종료 ###
 
             result_image = image.copy()
             if self.start:
@@ -323,6 +333,7 @@ class SelfDrivingNode(Node):
 
                 # obtain the binary image of the lane
                 binary_image = self.lane_detect.get_binary(image)
+                t2 = time.time()
 
                 twist = Twist()
 
@@ -345,7 +356,7 @@ class SelfDrivingNode(Node):
 
                                 # 횡단보도 정지 관련 로직
 
-
+                t3_start = time.time()
                 
                 crosswalk_stop_triggered = False # 차선유지 로직에 쓰임
 
@@ -361,6 +372,8 @@ class SelfDrivingNode(Node):
                         self.mecanum_pub.publish(Twist()) # 정지
                         self.stop_for_crosswalk_start_time = time.time() # 현재 정지한 시간
                         crosswalk_stop_triggered = True  # 횡단보도 때문에 멈췄다고 True
+
+                t3_end = time.time()
                 
                 # 2. 횡단보도 앞ㅇ있는 동안 로직
                 # 2. 횡단보도 앞에 정지해 있는 동안의 로직
@@ -488,7 +501,10 @@ class SelfDrivingNode(Node):
                 #     else:
                 #         self.count_park = 0
 
-
+                ### 시간 측정 시작 ###
+                # 2. 차선 인식 및 제어 로직 시간 측정
+                t3_start = time.time()
+                ### 시간 측정 종료 ###
 
                 # 횡단보도 때문에 안 멈췄다면 ( False 가 아니라면 / 기본값 False)
                 if not crosswalk_stop_triggered: 
@@ -556,7 +572,15 @@ class SelfDrivingNode(Node):
                         self.mecanum_pub.publish(recovery_twist)
 
                         self.pid.clear()
-
+                
+                ### 시간 측정 시작 ###
+                t3_end = time.time()
+                ### 시간 측정 종료 ###
+                
+                ### 시간 측정 시작 ###
+                # 3. 결과 이미지 처리 시간 측정
+                t4_start = time.time()
+                ### 시간 측정 종료 ###
              
                 if self.objects_info:
                     for i in self.objects_info:
@@ -571,6 +595,10 @@ class SelfDrivingNode(Node):
                             color=color,
                             label="{}:{:.2f}".format(class_name, cls_conf),
                         )
+
+                ### 시간 측정 시작 ###
+                t4_end = time.time()
+                ### 시간 측정 종료 ###
 
             else:
                 # [수정] 주행이 끝나면 (self.start가 False이면) 모든 불을 끕니다.
@@ -587,7 +615,25 @@ class SelfDrivingNode(Node):
             
             self.result_publisher.publish(self.bridge.cv2_to_imgmsg(bgr_image, "bgr8"))
 
-           
+            ### 시간 측정 시작 ###
+            # 최종 로깅
+            loop_end_time = time.time()
+            total_loop_time = (loop_end_time - time_start) * 1000     
+
+            if self.start:
+                preprocessing_time = (t2 - t1) * 1000
+                lane_logic_time = (t3_end - t3_start) * 1000
+                drawing_time = (t4_end - t4_start) * 1000
+            
+            self.get_logger().info(
+                f'[PERF] Total: {total_loop_time:.2f}ms | '
+                f'QueueWait: {queue_wait_time:.2f}ms | '
+                f'Preproc: {preprocessing_time:.2f}ms | '
+                f'LaneLogic: {lane_logic_time:.2f}ms | '
+                f'Drawing: {drawing_time:.2f}ms'
+            )
+            ### 시간 측정 종료 ###
+
             time_d = 0.03 - (time.time() - time_start)
             if time_d > 0:
                 time.sleep(time_d)
@@ -600,6 +646,10 @@ class SelfDrivingNode(Node):
 
     # Obtain the target detection result
     def get_object_callback(self, msg):
+        ### 시간 측정 시작 ###
+        callback_start_time = time.time()
+        ### 시간 측정 종료 ###
+
         self.objects_info = msg.objects
 
         # 이번 프레임의 타겟 횡단보도를 초기화
@@ -623,7 +673,6 @@ class SelfDrivingNode(Node):
             # self.target_crosswalk = max(crosswalks_detected, key=lambda cw: abs(cw.box[2] - cw.box[0]) * abs(cw.box[3] - cw.box[1]))
              # --- 핵심 수정: 면적이 가장 큰'이 아니라 'y좌표가 가장 큰(가장 가까운)' 횡단보도를 타겟으로 설정 ---
             self.target_crosswalk = max(crosswalks_detected, key=lambda cw: (cw.box[1] + cw.box[3]) / 2)
-
 
 
         # if self.objects_info == []:  # If it is not recognized, reset the variable
@@ -698,6 +747,11 @@ class SelfDrivingNode(Node):
 
             # (신호등 등 다른 객체 정보 처리 로직은 필요시 여기에 추가)
             # 예시: self.traffic_signs_status = next((obj for obj in self.objects_info if obj.class_name in ['red', 'green']), None)
+
+        callback_end_time = time.time()
+        processing_time = (callback_end_time - callback_start_time) * 1000  # 밀리초(ms) 단위
+        self.get_logger().info(f'[PERF] Object callback processing time: {processing_time:.2f} ms')
+        ### 시간 측정 종료 ###
 
 def main():
     node = SelfDrivingNode('self_driving')

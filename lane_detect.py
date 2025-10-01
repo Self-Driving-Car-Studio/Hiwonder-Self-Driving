@@ -4,6 +4,7 @@
 # @author:aiden
 # lane detection for autonomous driving
 import os
+import time
 import cv2
 import math
 import queue
@@ -155,6 +156,9 @@ class LaneDetector(object):
         return up_point, down_point, y_center
 
     def get_binary(self, image):
+        ### 시간 측정 시작 ###
+        start_time = time.time()
+
         # recognize color through LAB space
         img_lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)  # convert RGB to LAB
         img_blur = cv2.GaussianBlur(img_lab, (3, 3), 3)  # Gaussian blur denoising
@@ -162,9 +166,16 @@ class LaneDetector(object):
         eroded = cv2.erode(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))  # erode
         dilated = cv2.dilate(eroded, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))  # dilate
 
+        ### 시간 측정 및 로깅 ###
+        end_time = time.time()
+        processing_time = (end_time - start_time) * 1000 # 밀리초(ms) 단위
+        print(f'[PERF] get_binary processing time: {processing_time:.2f} ms')
+
         return dilated
 
     def __call__(self, image, result_image):
+        ### 시간 측정 시작 ###
+        start_time = time.time()
         # extract the center point based on the proportion
         centroid_sum = 0
         h, w = image.shape[:2]
@@ -201,44 +212,72 @@ class LaneDetector(object):
         center_pos = centroid_sum / self.weight_sum  # calculate the center point based on the proportion
         angle = math.degrees(-math.atan((center_pos - (w / 2.0)) / (h / 2.0)))
         
+        ### 시간 측정 및 로깅 ###
+        end_time = time.time()
+        processing_time = (end_time - start_time) * 1000 # 밀리초(ms) 단위
+        print(f'[PERF] LaneDetector call processing time: {processing_time:.2f} ms')
+    
+
         return result_image, angle, max_center_x
 
 image_queue = queue.Queue(2)
 def image_callback(ros_image):
+    ### 시간 측정 시작 ###
+    reception_time = time.time()
+
     cv_image = bridge.imgmsg_to_cv2(ros_image, "bgr8")
     bgr_image = np.array(cv_image, dtype=np.uint8)
     if image_queue.full():
         # if the queue is full, remove the oldest image
         image_queue.get()
         # put the image into the queue
-    image_queue.put(bgr_image)
+    # 이미지와 수신 시간을 함께 큐에 넣음
+    image_queue.put((bgr_image, reception_time))
 
 def main():
     running = True
     # self.get_logger().info('\033[1;32m%s\033[0m' % (*tuple(lab_data['lab']['Stereo'][self.target_color]['min']), tuple(lab_data['lab']['Stereo'][self.target_color]['max'])))
 
     while running:
+        loop_start_time = time.time()
+
         try:
-            image = image_queue.get(block=True, timeout=1)
+            image, reception_time = image_queue.get(block=True, timeout=1)
         except queue.Empty:
             if not running:
                 break
             else:
                 continue
+        
+        ### 1. 큐 대기 시간 측정 ###
+        queue_wait_time = (loop_start_time - reception_time) * 1000
+
         binary_image = lane_detect.get_binary(image)
         cv2.imshow('binary', binary_image)
         img = image.copy()
+
+        t1 = time.time()
         y = lane_detect.add_horizontal_line(binary_image)
         roi = [(0, y), (640, y), (640, 0), (0, 0)]
         cv2.fillPoly(binary_image, [np.array(roi)], [0, 0, 0])  # fill the top with black to avoid interference
         min_x = cv2.minMaxLoc(binary_image)[-1][0]
         cv2.line(img, (min_x, y), (640, y), (255, 255, 255), 50)  # draw a virtual line to guide the turning
+        t2 = time.time()
+        add_line_time = (t2 - t1) * 1000
+
         result_image, angle, x = lane_detect(binary_image, image.copy()) 
         '''
         up, down = lane_detect.add_vertical_line_far(binary_image)
         #up, down, center = lane_detect.add_vertical_line_near(binary_image)
         cv2.line(img, up, down, (255, 255, 255), 10)
         '''
+
+        ### 최종 로깅 ###
+        loop_end_time = time.time()
+        total_loop_time = (loop_end_time - loop_start_time) * 1000
+        print(f'[PERF] Main Loop - Total: {total_loop_time:.2f}ms | QueueWait: {queue_wait_time:.2f}ms | AddLine: {add_line_time:.2f}ms')
+        print("-" * 50) # 구분선
+
         cv2.imshow('image', img)
         key = cv2.waitKey(1)
         if key == ord('q') or key == 27:  # press Q or Esc to quit
