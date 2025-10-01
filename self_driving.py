@@ -112,17 +112,6 @@ class SelfDrivingNode(Node):
         if not self.get_parameter('only_line_follow').value:
             self.send_request(self.start_yolov5_client, Trigger.Request())
         time.sleep(1)
-
-                # --- 워밍업 루틴 추가 ---
-        self.get_logger().info("Starting warm-up routine...")
-        # 가짜 이미지 생성 (실제 카메라 해상도와 동일하게)
-        dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
-        # 주요 연산 함수를 미리 호출하여 예열
-        for _ in range(5): # 5번 정도 반복
-            _ = self.lane_detect.get_binary(dummy_image)
-            _ = self.lane_detect(dummy_image, dummy_image.copy())
-        self.get_logger().info("Warm-up finished.")
-        # --- 워밍업 끝 ---
         
         if 1:#self.get_parameter('start').value:
             self.display = True
@@ -140,6 +129,7 @@ class SelfDrivingNode(Node):
         self.start = False
         self.enter = False
         self.right = True
+        self.first = True  # for warm-up
 
         self.have_turn_right = False
         self.detect_turn_right = False
@@ -297,6 +287,19 @@ class SelfDrivingNode(Node):
 
     def main(self):
         while self.is_running:
+            
+            # --- 워밍업 루틴 추가 ---
+            if self.first:
+                self.get_logger().info("Starting warm-up routine...")
+                # 가짜 이미지 생성 (실제 카메라 해상도와 동일하게)
+                dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
+                # 주요 연산 함수를 미리 호출하여 예열
+                for _ in range(5): # 5번 정도 반복
+                    _ = self.lane_detect.get_binary(dummy_image)
+                self.get_logger().info("Warm-up finished.")
+                self.first = False
+                # --- 워밍업 끝 ---
+
             time_start = time.time() # 루프 시작 시간
             
             items_in_queue = [] 
