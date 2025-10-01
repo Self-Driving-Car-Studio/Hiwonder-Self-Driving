@@ -126,6 +126,8 @@ class SelfDrivingNode(Node):
         self.get_logger().info('\033[1;32m%s\033[0m' % 'start')
 
     def param_init(self):
+        self.rate = self.create_rate(30)
+
         self.start = False
         self.enter = False
         self.right = True
@@ -637,6 +639,9 @@ class SelfDrivingNode(Node):
             time_d = 0.03 - (time.time() - time_start)
             if time_d > 0:
                 time.sleep(time_d)
+
+        self.rate.sleep()
+        
         # [수정] 메인 루프 종료 시 LED 끄기
         self.set_led_color(1, 0, 0, 0)
         self.set_led_color(2, 0, 0, 0)
