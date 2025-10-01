@@ -18,7 +18,9 @@ bridge = CvBridge()
 lab_data = common.get_yaml_data("/home/ubuntu/software/lab_tool/lab_config.yaml")
 
 class LaneDetector(object):
-    def __init__(self, color):
+    def __init__(self, color, logger):
+        self.logger = logger # 로거를 클래스 멤버로 저장
+
         # lane color
         self.target_color = color
         # ROI for lane detection
@@ -169,7 +171,7 @@ class LaneDetector(object):
         ### 시간 측정 및 로깅 ###
         end_time = time.time()
         processing_time = (end_time - start_time) * 1000 # 밀리초(ms) 단위
-        print(f'[PERF] get_binary processing time: {processing_time:.2f} ms')
+        self.logger.info(f'[PERF] get_binary processing time: {processing_time:.2f} ms')
 
         return dilated
 
@@ -215,7 +217,7 @@ class LaneDetector(object):
         ### 시간 측정 및 로깅 ###
         end_time = time.time()
         processing_time = (end_time - start_time) * 1000 # 밀리초(ms) 단위
-        print(f'[PERF] LaneDetector call processing time: {processing_time:.2f} ms')
+        self.logger.info(f'[PERF] LaneDetector call processing time: {processing_time:.2f} ms')
     
 
         return result_image, angle, max_center_x
@@ -234,7 +236,8 @@ def image_callback(ros_image):
     # 이미지와 수신 시간을 함께 큐에 넣음
     image_queue.put((bgr_image, reception_time))
 
-def main():
+def main(lane_detector_obj):
+    logger = lane_detector_obj.logger
     running = True
     # self.get_logger().info('\033[1;32m%s\033[0m' % (*tuple(lab_data['lab']['Stereo'][self.target_color]['min']), tuple(lab_data['lab']['Stereo'][self.target_color]['max'])))
 
@@ -275,8 +278,8 @@ def main():
         ### 최종 로깅 ###
         loop_end_time = time.time()
         total_loop_time = (loop_end_time - loop_start_time) * 1000
-        print(f'[PERF] Main Loop - Total: {total_loop_time:.2f}ms | QueueWait: {queue_wait_time:.2f}ms | AddLine: {add_line_time:.2f}ms')
-        print("-" * 50) # 구분선
+        logger.info(f'[PERF] Main Loop - Total: {total_loop_time:.2f}ms | QueueWait: {queue_wait_time:.2f}ms | AddLine: {add_line_time:.2f}ms')
+        logger.info("-" * 50) # 구분선
 
         cv2.imshow('image', img)
         key = cv2.waitKey(1)
