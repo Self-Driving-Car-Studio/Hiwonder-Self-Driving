@@ -384,12 +384,10 @@ class SelfDrivingNode(Node):
 
                 # 1. 주요 타겟 횡단보도가 있고, 아직 정지 동작을 시작하지 않았을 때
                 if self.target_crosswalk is not None and self.stop_for_crosswalk_start_time == 0 :
-                    box = self.target_crosswalk.box
-                    area = abs(box[2] - box[0]) * abs(box[3]-box[1])
-                    self.get_logger().info(f"타겟 횡단보도 확인, 면적: {area:.0f}")
+        
 
                     # 1-1. 면적이 정지 기준을 충족하고, 아직 정지 타이머가 시작되지 않았다면
-                    if self.target_crosswalk.class_name == 'crosswalk' and 25000 > area > 9000 and self.stop_for_crosswalk_start_time == 0:
+                    if self.target_crosswalk.box[3] > 480 * 0.4:
                         self.get_logger().info("횡단보도 근접, 정지중..")
                         self.mecanum_pub.publish(Twist()) # 정지
                         self.stop_for_crosswalk_start_time = time.time() # 현재 정지한 시간
