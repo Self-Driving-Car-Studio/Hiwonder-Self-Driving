@@ -126,8 +126,6 @@ class SelfDrivingNode(Node):
         self.get_logger().info('\033[1;32m%s\033[0m' % 'start')
 
     def param_init(self):
-        self.rate = self.create_rate(30)
-
         self.start = False
         self.enter = False
         self.right = True
@@ -289,13 +287,21 @@ class SelfDrivingNode(Node):
     def main(self):
         while self.is_running:
             time_start = time.time() # 루프 시작 시간
-            try:
-                image, reception_time = self.image_queue.get(block=True, timeout=1)
-            except queue.Empty:
-                if not self.is_running:
-                    break
-                else:
+            
+            items_in_queue = [] 
+            # 1. 큐가 빌 때까지 모든 항목을 꺼내서 임시 리스트에 담습니다. (줄 세워 내보내기)
+            while not self.image_queue.empty():
+                try:
+                    items_in_queue.append(self.image_queue.get_nowait())
+                except queue.Empty:
                     continue
+            
+            # 2. 임시 리스트가 비어있으면 처리할 게 없으므로 건너뜁니다.
+            if not items_in_queue:
+                time.sleep(0.001)
+                continue
+
+            image, reception_time = items_in_queue[-1]
 
             ### 시간 측정 시작 ###
             # 큐 대기 시간 측정
@@ -639,9 +645,6 @@ class SelfDrivingNode(Node):
             time_d = 0.03 - (time.time() - time_start)
             if time_d > 0:
                 time.sleep(time_d)
-
-        self.rate.sleep()
-        
         # [수정] 메인 루프 종료 시 LED 끄기
         self.set_led_color(1, 0, 0, 0)
         self.set_led_color(2, 0, 0, 0)
