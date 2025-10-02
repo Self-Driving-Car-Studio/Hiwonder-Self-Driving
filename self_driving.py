@@ -26,6 +26,7 @@ from example.self_driving import lane_detect
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from ros_robot_controller_msgs.msg import BuzzerState, SetPWMServoState, PWMServoState, RGBStates, RGBState # for RGB LED control import: RGBStates, RGBState #jr
+import logging
 
 class SelfDrivingNode(Node):
     def __init__(self, name):
@@ -33,6 +34,16 @@ class SelfDrivingNode(Node):
         super().__init__(name, allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True)
         self.name = name
         self.is_running = True
+
+        # Python 표준 로거 설정
+        logging.basicConfig(
+            format="%(asctime)s [%(levelname)s] [%(name)s]: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+            level=logging.INFO,
+            force=True  # 기존 로거 초기화 덮어쓰기
+        )
+
+        self.logger = logging.getLogger(name)
 
         self.pid = pid.PID(0.2, 0.0, 0.1) # D 제어부분 0.1 로 증가
         self.turn_pid = pid.PID(0.2, 0.0, 0.4) # 일반pid 와 turn 전용 pid 구분, turn 의 D부분을 올림
@@ -123,7 +134,7 @@ class SelfDrivingNode(Node):
         #self.park_action()
         threading.Thread(target=self.main, daemon=True).start()
         self.create_service(Trigger, '~/init_finish', self.get_node_state)
-        self.get_logger().info('\033[1;32m%s\033[0m' % 'start')
+        self.logger.info('\033[1;32m%s\033[0m' % 'start')
 
     def param_init(self):
         self.start = False
@@ -185,7 +196,7 @@ class SelfDrivingNode(Node):
                 return future.result()
 
     def enter_srv_callback(self, request, response):
-        self.get_logger().info('\033[1;32m%s\033[0m' % "self driving enter")
+        self.logger.info('\033[1;32m%s\033[0m' % "self driving enter")
         with self.lock:
             self.start = False
             camera = 'depth_cam' #self.get_parameter('depth_camera_name').value
@@ -198,7 +209,7 @@ class SelfDrivingNode(Node):
         return response
 
     def exit_srv_callback(self, request, response):
-        self.get_logger().info('\033[1;32m%s\033[0m' % "self driving exit")
+        self.logger.info('\033[1;32m%s\033[0m' % "self driving exit")
         with self.lock:
             try:
                 if self.image_sub is not None:
@@ -206,7 +217,7 @@ class SelfDrivingNode(Node):
                 if self.object_sub is not None:
                     self.object_sub.unregister()
             except Exception as e:
-                self.get_logger().info('\033[1;32m%s\033[0m' % str(e))
+                self.logger.info('\033[1;32m%s\033[0m' % str(e))
             self.mecanum_pub.publish(Twist())
         self.param_init()
         response.success = True
@@ -214,7 +225,7 @@ class SelfDrivingNode(Node):
         return response
 
     def set_running_srv_callback(self, request, response):
-        self.get_logger().info('\033[1;32m%s\033[0m' % "set_running")
+        self.logger.info('\033[1;32m%s\033[0m' % "set_running")
         with self.lock:
             self.start = request.data
             if not self.start:
@@ -283,18 +294,18 @@ class SelfDrivingNode(Node):
         self.mecanum_pub.publish(Twist())
         # [추가] 모든 주차 동작이 끝나면 "주차 완료" 상태 플래그를 True로 설정합니다.
         self.parking_completed = True
-        self.get_logger().info('주차 완료! LED를 소등합니다.')
+        self.logger.info('주차 완료! LED를 소등합니다.')
 
     def _perform_warmup(self):
         """첫 실행 시 주요 연산 함수를 미리 호출하여 최적화를 준비합니다."""
-        self.get_logger().info("Starting warm-up routine...")
+        self.logger.info("Starting warm-up routine...")
 
         # 가짜 이미지 생성 (실제 카메라 해상도와 동일하게)
         dummy_image = np.zeros((480, 640, 3), dtype=np.uint8)
         # 주요 연산 함수를 미리 호출하여 예열
         for _ in range(5): # 5번 정도 반복
             _ = self.lane_detect.get_binary(dummy_image)
-        self.get_logger().info("Warm-up finished.")
+        self.logger.info("Warm-up finished.")
         self.first = False
 
     def _get_latest_image(self):
@@ -350,7 +361,7 @@ class SelfDrivingNode(Node):
         # 1. 횡단보도에 접근하여 정지해야 하는지 판단
         if self.target_crosswalk is not None and self.stop_for_crosswalk_start_time == 0:
             if self.target_crosswalk.box[3] > 480 * 0.4: # 횡단보도 면적이 기준 이상일 때
-                self.get_logger().info("횡단보도 근접, 정지를 시작합니다.")
+                self.logger.info("횡단보도 근접, 정지를 시작합니다.")
                 self.mecanum_pub.publish(Twist()) # 정지 명령
                 self.stop_for_crosswalk_start_time = time.time()
                 return True
@@ -362,14 +373,14 @@ class SelfDrivingNode(Node):
             # 신호등이 감지된 경우
             if self.traffic_signs_status is not None:
                 if self.traffic_signs_status.class_name == 'green':
-                    self.get_logger().info("초록불 감지. 출발합니다!")
+                    self.logger.info("초록불 감지. 출발합니다!")
                     can_go = True
                 elif self.traffic_signs_status.class_name == 'red':
-                    self.get_logger().info("빨간불 감지. 대기합니다...")
+                    self.logger.info("빨간불 감지. 대기합니다...")
                     self.mecanum_pub.publish(Twist()) # 정지유지
             else: # 신호등이 없을 때
                 if time.time() - self.stop_for_crosswalk_start_time > 1.0: # 1초 대기
-                    self.get_logger().info(f"신호등 없음. 1초 대기 후 출발합니다.")
+                    self.logger.info(f"신호등 없음. 1초 대기 후 출발합니다.")
                     can_go = True
                 else:
                     self.mecanum_pub.publish(Twist())
@@ -393,7 +404,7 @@ class SelfDrivingNode(Node):
             
             # 일정 시간(프레임) 이상 횡단보도가 안 보이면 교차로를 통과한 것으로 간주
             if self.crosswalk_disappear_counter > 30: # 약 1초간 횡단보도가 안 보이면
-                self.get_logger().info("교차로 통과 완료. 다음 횡단보도를 준비합니다.")
+                self.logger.info("교차로 통과 완료. 다음 횡단보도를 준비합니다.")
                 self.is_passing_intersection = False
                 self.crosswalk_disappear_counter = 0
         
@@ -499,7 +510,7 @@ class SelfDrivingNode(Node):
             lane_logic_time = (t3_end - t3_start) * 1000
             
             # 드로잉 시간은 이제 _draw_overlays 함수에서 별도 측정 가능
-            self.get_logger().info(
+            self.logger.info(
                 f'[PERF] Total: {total_loop_time:.2f}ms | '
                 f'QueueWait: {queue_wait_time:.2f}ms | '
                 f'Preproc: {preprocessing_time:.2f}ms | '
@@ -507,7 +518,7 @@ class SelfDrivingNode(Node):
                 f'Lane: {lane_logic_time:.2f}ms'
             )
         else:
-            self.get_logger().info(f'[PERF] Total: {total_loop_time:.2f}ms')
+            self.logger.info(f'[PERF] Total: {total_loop_time:.2f}ms')
 
     def main(self):
         if self.first:
@@ -610,7 +621,7 @@ class SelfDrivingNode(Node):
 
         callback_end_time = time.time()
         processing_time = (callback_end_time - callback_start_time) * 1000  # 밀리초(ms) 단위
-        self.get_logger().info(f'[PERF] Object callback processing time: {processing_time:.2f} ms')
+        self.logger.info(f'[PERF] Object callback processing time: {processing_time:.2f} ms')
         ### 시간 측정 종료 ###
 
 def main():
@@ -620,7 +631,7 @@ def main():
     try:
         executor.spin()
     finally:
-        node.get_logger().info('노드를 종료합니다. LED를 끄고 로봇을 정지합니다.')
+        node.logger.info('노드를 종료합니다. LED를 끄고 로봇을 정지합니다.')
         node.set_led_color(1, 0, 0, 0)
         node.set_led_color(2, 0, 0, 0)
         node.mecanum_pub.publish(Twist())
