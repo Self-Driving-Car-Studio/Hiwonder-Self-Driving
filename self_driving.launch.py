@@ -54,6 +54,7 @@ def launch_setup(context):
         executable='self_driving',
         output='screen',
         parameters=[{'start': start}, {'only_line_follow': only_line_follow}],
+        additional_env={'ROS_LOG_ENABLE_FORMATTED_TIME': 'true'} 
     )
 
     return [start_arg,
