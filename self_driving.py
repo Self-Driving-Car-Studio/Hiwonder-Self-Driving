@@ -575,7 +575,7 @@ class SelfDrivingNode(Node):
             self.result_publisher.publish(self.bridge.cv2_to_imgmsg(bgr_image, "bgr8"))
 
             # 성능 로깅
-            self._log_performance(loop_start_time, reception_time, t1_start, t1_end, t2_start, t2_end, t3_start, t3_end)
+            # self._log_performance(loop_start_time, reception_time, t1_start, t1_end, t2_start, t2_end, t3_start, t3_end)
 
             # 루프 주기 조절 (약 30 FPS 목표)
             elapsed_time = 0.03 - (time.time() - loop_start_time)
@@ -621,7 +621,7 @@ class SelfDrivingNode(Node):
 
         callback_end_time = time.time()
         processing_time = (callback_end_time - callback_start_time) * 1000  # 밀리초(ms) 단위
-        self.logger.info(f'[PERF] Object callback processing time: {processing_time:.2f} ms')
+        # self.logger.info(f'[PERF] Object callback processing time: {processing_time:.2f} ms')
         ### 시간 측정 종료 ###
 
 def main():

@@ -169,7 +169,7 @@ class LaneDetector(object):
         ### 시간 측정 및 로깅 ###
         end_time = time.time()
         processing_time = (end_time - start_time) * 1000 # 밀리초(ms) 단위
-        print(f'[PERF] get_binary processing time: {processing_time:.2f} ms')
+        # print(f'[PERF] get_binary processing time: {processing_time:.2f} ms')
 
         return dilated
 
