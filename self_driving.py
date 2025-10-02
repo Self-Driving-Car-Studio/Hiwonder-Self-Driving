@@ -483,7 +483,7 @@ class SelfDrivingNode(Node):
         return result_image, twist
     
 
-    def _draw_overlays(self, image):
+    def _draw_overlays(self, image, time_stamp):
         """결과 이미지에 객체 바운딩 박스와 FPS 정보를 그립니다."""
         # 객체 정보 시각화
         if self.objects_info:
@@ -503,6 +503,12 @@ class SelfDrivingNode(Node):
         if self.display:
             self.fps.update()
             image = self.fps.show_fps(image)
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.6
+        thickness = 2
+        color = (0, 255, 255)  # 노란색
+        cv2.putText(image, time_stamp, (10, 30), font, font_scale, color, thickness)
 
         return image
     
@@ -577,7 +583,7 @@ class SelfDrivingNode(Node):
                 time.sleep(0.01)
 
             # 시각화 및 결과 전송
-            result_image = self._draw_overlays(result_image)
+            result_image = self._draw_overlays(result_image, t3_end)
             bgr_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
             self.result_publisher.publish(self.bridge.cv2_to_imgmsg(bgr_image, "bgr8"))
 
