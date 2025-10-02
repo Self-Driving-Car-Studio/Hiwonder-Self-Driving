@@ -27,6 +27,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from ros_robot_controller_msgs.msg import BuzzerState, SetPWMServoState, PWMServoState, RGBStates, RGBState # for RGB LED control import: RGBStates, RGBState #jr
 import logging
+from datetime import datetime
 
 class SelfDrivingNode(Node):
     def __init__(self, name):
@@ -497,11 +498,22 @@ class SelfDrivingNode(Node):
             self.fps.update()
             image = self.fps.show_fps(image)
 
+        # 1. 전달받은 숫자(float) 타임스탬프를 datetime 객체로 변환합니다.
+        #    time_stamp가 유효한 값일 때만(0 이상) 변환을 시도합니다.
+        if time_stamp > 0:
+            dt_object = datetime.fromtimestamp(time_stamp)
+            # 2. datetime 객체를 원하는 형식의 '문자열'로 포맷팅합니다.
+            #    .%f는 마이크로초를 의미하며, [: -3]으로 잘라 밀리초(3자리)까지만 표시합니다.
+            time_str = dt_object.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        else:
+            time_str = "Timestamp N/A" # time_stamp가 유효하지 않을 경우
+
+        # 3. 변환된 '문자열(time_str)'을 이미지에 그립니다.
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.6
-        thickness = 2
-        color = (0, 255, 255)  # 노란색
-        cv2.putText(image, time_stamp, (10, 30), font, font_scale, color, thickness)
+        font_scale = 0.5
+        thickness = 1
+        color = (0, 255, 255)  # 노란색 (BGR 순서)
+        cv2.putText(image, time_str, (10, 25), font, font_scale, color, thickness)
 
         return image
     
