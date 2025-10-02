@@ -184,6 +184,9 @@ class SelfDrivingNode(Node):
         self.stop_for_crosswalk_start_time = 0 # 횡단보도 앞 정지 시작 시간
         self.is_passing_intersection = False  # 현재 교차로를 통과/진행 중인지 여부
         self.crosswalk_disappear_counter = 0  # 횡단보도가 안 보이기 시작한 프레임 수
+        self.last_crosswalk_y_position = -1  # 마지막 통과한 횡단보도의 y좌표
+        self.min_crosswalk_distance = 150  # 새로운 횡단보도로 인식하기 위한 최소 거리(픽셀)
+
 
     def get_node_state(self, request, response):
         response.success = True
@@ -402,11 +405,15 @@ class SelfDrivingNode(Node):
             else:
                 self.crosswalk_disappear_counter = 0 # 횡단보도가 보이면 카운터 초기화
             
-            # 일정 시간(프레임) 이상 횡단보도가 안 보이면 교차로를 통과한 것으로 간주
-            if self.crosswalk_disappear_counter > 30: # 약 1초간 횡단보도가 안 보이면
-                self.logger.info("교차로 통과 완료. 다음 횡단보도를 준비합니다.")
+            if self.crosswalk_disappear_counter > 30:
+                self.get_logger().info("Intersection cleared. Ready for the next one.")
+                # 통과한 횡단보도의 위치 저장
+                if self.target_crosswalk is not None:
+                    self.last_crosswalk_y_position = (self.target_crosswalk.box[1] + self.target_crosswalk.box[3]) / 2
                 self.is_passing_intersection = False
                 self.crosswalk_disappear_counter = 0
+                self.target_crosswalk = None  # 타겟 초기화
+
         
         return self.stop_for_crosswalk_start_time > 0 # 정지 중이면 True 반환
 
@@ -612,12 +619,14 @@ class SelfDrivingNode(Node):
                     self.traffic_signs_status = obj
 
         # 3. 추출된 정보를 바탕으로 최종 판단
-        # "교차로를 통과 중이 아닐 때" 그리고 "횡단보도가 2개 이상 보일 때"만 타겟 설정
         if not self.is_passing_intersection and len(crosswalks_detected) >= 1:
-            # # 가장 큰 횡단보도를 타겟으로 설정
-            # self.target_crosswalk = max(crosswalks_detected, key=lambda cw: abs(cw.box[2] - cw.box[0]) * abs(cw.box[3] - cw.box[1]))
-             # --- 핵심 수정: 면적이 가장 큰'이 아니라 'y좌표가 가장 큰(가장 가까운)' 횡단보도를 타겟으로 설정 ---
-            self.target_crosswalk = max(crosswalks_detected, key=lambda cw: (cw.box[1] + cw.box[3]) / 2)
+            # 가장 가까운(y좌표가 큰) 횡단보도 찾기
+            closest_crosswalk = max(crosswalks_detected, key=lambda cw: (cw.box[1] + cw.box[3]) / 2)
+            current_y = (closest_crosswalk.box[1] + closest_crosswalk.box[3]) / 2
+            
+            # 마지막 통과한 횡단보도와 충분히 떨어져 있는지 확인
+            if self.last_crosswalk_y_position == -1 or abs(current_y - self.last_crosswalk_y_position) > self.min_crosswalk_distance:
+                self.target_crosswalk = closest_crosswalk
 
         callback_end_time = time.time()
         processing_time = (callback_end_time - callback_start_time) * 1000  # 밀리초(ms) 단위
