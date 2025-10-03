@@ -346,15 +346,38 @@ class SelfDrivingNode(Node):
         # 우선순위 2: 우회전 중
         elif self.start_turn:
             self.set_led_color(1, 0, 255, 0) # 1번 LED는 초록색 유지
+            # 깜빡임 로직
             if time.time() - self.last_blink_time > 0.25:
                 self.last_blink_time = time.time()
-                # LED 2번 노란색 점멸
-                self.led2_color = (0, 0, 0) if self.led2_color != (0, 0, 0) else (255, 255, 0)
-                self.set_led_color(2, *self.led2_color)
+                # 현재 LED 2번 상태를 토글
+                if self.led2_color == (255, 255, 0):
+                    # 강제로 초기화 후 전송
+                    self.led2_color = (0, 0, 0)
+                    msg = RGBStates()
+                    state = RGBState()
+                    state.index = 2
+                    state.red = 0
+                    state.green = 0
+                    state.blue = 0
+                    msg.states.append(state)
+                    self.rgb_pub.publish(msg)
+                else:
+                    # 강제로 초기화 후 전송
+                    self.led2_color = (255, 255, 0)
+                    msg = RGBStates()
+                    state = RGBState()
+                    state.index = 2
+                    state.red = 255
+                    state.green = 255
+                    state.blue = 0
+                    msg.states.append(state)
+                    self.rgb_pub.publish(msg)
         # 우선순위 3: 일반 주행 상태
         else:
             self.set_led_color(1, 0, 255, 0)
             self.set_led_color(2, 0, 255, 0)
+
+
     
     def _handle_crosswalks(self):
         """
@@ -547,7 +570,7 @@ class SelfDrivingNode(Node):
             self._perform_warmup()
             
         while self.is_running:
-            loop_start_time = time.time() # 루프 시작 시간
+            loop_start_time = time.time()
             
             image, reception_time = self._get_latest_image()
             if image is None:
@@ -563,6 +586,16 @@ class SelfDrivingNode(Node):
             t1_start, t1_end, t2_start, t2_end, t3_start, t3_end = (loop_start_time,) * 6
 
             if self.start:
+                # 주차 표지판 감지 시 주차 실행 (최우선)
+                if self.start_park and not self.parking_completed:
+                    self.logger.info('주차를 시작합니다!')
+                    self.mecanum_pub.publish(Twist())  # 일단 정지
+                    time.sleep(0.5)
+                    self.park_action()  # 주차 동작 실행
+                    # 주차 후에는 프로그램 종료 또는 대기
+                    self.start = False
+                    continue
+                
                 self._update_leds()  # 현재 상태에 맞게 LED 업데이트
 
                 t1_start = time.time()
@@ -574,10 +607,7 @@ class SelfDrivingNode(Node):
                 crosswalk_stop_triggered = self._handle_crosswalks()
                 t2_end = time.time()
 
-                ### 시간 측정 시작 ###
-                # 2. 차선 인식 및 제어 로직 시간 측정
-
-                # 횡단보도 때문에 안 멈췄다면 ( False 가 아니라면 / 기본값 False)
+                # 횡단보도 때문에 안 멈췄다면
                 if not crosswalk_stop_triggered: 
                     t3_start = time.time()
                     result_image, twist_command = self._follow_lane(binary_image, result_image)
@@ -586,32 +616,28 @@ class SelfDrivingNode(Node):
                 self.mecanum_pub.publish(twist_command)
 
             else:
-                # [수정] 주행이 끝나면 (self.start가 False이면) 모든 불을 끕니다.
                 self.set_led_color(1, 0, 0, 0)
                 self.set_led_color(2, 0, 0, 0)
                 time.sleep(0.01)
 
             # 시각화 및 결과 전송
-            result_image = self._draw_overlays(result_image, t3_end)
+            result_image = self._draw_overlays(result_image, str(t3_end))
             bgr_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
             self.result_publisher.publish(self.bridge.cv2_to_imgmsg(bgr_image, "bgr8"))
 
-            # 성능 로깅
-            # self._log_performance(loop_start_time, reception_time, t1_start, t1_end, t2_start, t2_end, t3_start, t3_end)
-
-            # 루프 주기 조절 (약 30 FPS 목표)
-            elapsed_time = 0.03 - (time.time() - loop_start_time)
+            # 루프 주기 조절
+            elapsed_time = time.time() - loop_start_time
             sleep_time = 0.03 - elapsed_time
             if sleep_time > 0:
                 time.sleep(sleep_time)
                 
-        # [수정] 메인 루프 종료 시 LED 끄기
+        # 메인 루프 종료 시 LED 끄기
         self.set_led_color(1, 0, 0, 0)
         self.set_led_color(2, 0, 0, 0)
         self.mecanum_pub.publish(Twist())
         rclpy.shutdown()
 
-    # Obtain the target detection result
+
     def get_object_callback(self, msg):
         """객체 감지 결과를 받아 분류 및 처리"""
         callback_start_time = time.time()
@@ -619,22 +645,23 @@ class SelfDrivingNode(Node):
         # 객체 정보 저장
         self.objects_info = msg.objects
         
-        # 미리 초기화된 변수들 (반복적인 메모리 할당 방지)
+        # 미리 초기화된 변수들
         self.target_crosswalk = None 
         self.traffic_signs_status = None
         
-        # 빠른 조기 리턴 - 객체가 없으면 즉시 종료
+        # 빠른 조기 리턴
         if not self.objects_info:
             return
         
         # 객체 분류를 위한 리스트 초기화
         crosswalks = []
         traffic_lights = []
-        turn_signs = []
+        right_signs_wall = []      # 벽면 우회전 표지판
+        right_signs_ground = []    # 바닥 우회전 표시
         park_signs = []
-        go_signs = []  # GO 표지판 리스트 추가
+        go_signs = []
         
-        # 단일 루프로 모든 객체 분류 (O(n) 시간복잡도)
+        # 단일 루프로 모든 객체 분류
         for obj in self.objects_info:
             class_name = obj.class_name
             
@@ -642,52 +669,76 @@ class SelfDrivingNode(Node):
             if class_name == 'crosswalk':
                 crosswalks.append(obj)
             
-            # 신호등 처리 (빨간불 우선순위)
+            # 신호등 처리
             elif class_name in ('red', 'green', 'yellow'):
                 if class_name == 'red':
                     self.traffic_signs_status = obj
-                    traffic_lights.insert(0, obj)  # 빨간불을 맨 앞에
-                elif self.traffic_signs_status is None or self.traffic_signs_status.class_name != 'red':
-                    if class_name == 'green':
+                    traffic_lights.insert(0, obj)
+                elif class_name == 'yellow':
+                    if self.traffic_signs_status is None or self.traffic_signs_status.class_name not in ('red',):
+                        self.traffic_signs_status = obj
+                    traffic_lights.append(obj)
+                elif class_name == 'green':
+                    if self.traffic_signs_status is None:
                         self.traffic_signs_status = obj
                     traffic_lights.append(obj)
             
-            # GO 표지판 처리 (추가)
+            # GO 표지판 처리
             elif class_name == 'go':
                 go_signs.append(obj)
-                # GO 표지판이 감지되면 즉시 플래그 설정
-                if obj.score > 0.7:  # 신뢰도 50% 이상일 때만
+                if obj.score > 0.5:
                     self.get_go = True
                     self.logger.info(f"GO 표지판 감지! (신뢰도: {obj.score:.2f})")
             
-            # 우회전 표지판
-            elif class_name in ('right', 'right_sign'):
-                turn_signs.append(obj)
+            # 벽면 우회전 표지판 (right)
+            elif class_name == 'right':
+                right_signs_wall.append(obj)
             
-            # 주차 표지판
+            # 바닥 우회전 표시 (right_sign)
+            elif class_name == 'right_sign':
+                right_signs_ground.append(obj)
+            
+            # 주차 표지판 처리 - 수정된 부분
             elif class_name == 'park':
                 park_signs.append(obj)
         
-        # 횡단보도 타겟 선정 (교차로 통과 중이 아닐 때만)
+        # 주차 표지판 처리 로직 (수정)
+        if park_signs and not self.start_park:
+            # 신뢰도가 가장 높은 주차 표지판 선택
+            best_park_sign = max(park_signs, key=lambda p: p.score)
+            
+            if best_park_sign.score > 0.5:  # 신뢰도 50% 이상
+                self.count_park += 1
+                # 주차 표지판의 x좌표 업데이트
+                self.park_x = (best_park_sign.box[0] + best_park_sign.box[2]) / 2
+                
+                self.logger.info(f'주차 표지판 감지 중: {self.count_park}/3 (신뢰도: {best_park_sign.score:.2f}, x: {self.park_x:.1f})')
+                
+                # 3프레임 연속 감지 시 주차 시작
+                if self.count_park >= 3:
+                    self.start_park = True
+                    self.logger.info(f'주차 시작! park_x={self.park_x:.1f}')
+            else:
+                # 신뢰도가 낮으면 카운터 감소
+                self.count_park = max(0, self.count_park - 1)
+        elif not park_signs and self.count_park > 0:
+            # 주차 표지판이 안 보이면 카운터 감소
+            self.count_park = max(0, self.count_park - 1)
+        
+        # 횡단보도 타겟 선정
         if not self.is_passing_intersection and crosswalks:
-            # 가장 가까운 횡단보도 (y좌표가 가장 큰 것)
             closest_crosswalk = max(crosswalks, key=lambda cw: (cw.box[1] + cw.box[3]) / 2)
             current_y = (closest_crosswalk.box[1] + closest_crosswalk.box[3]) / 2
             
-            # 마지막 통과한 횡단보도와 충분히 떨어져 있는지 확인
             if (self.last_crosswalk_y_position == -1 or 
                 abs(current_y - self.last_crosswalk_y_position) > self.min_crosswalk_distance):
                 self.target_crosswalk = closest_crosswalk
         
-        # GO 표지판이 없으면 플래그 해제 (선택적)
-        if not go_signs:
-            # GO 표지판이 일정 시간 보이지 않으면 플래그 해제
-            # 필요에 따라 타이머 기반 로직으로 변경 가능
-            pass
-        
-        # 성능 로깅 (디버그용)
+        # 성능 로깅
         processing_time = (time.time() - callback_start_time) * 1000
         # self.logger.debug(f'Object callback: {processing_time:.2f}ms')
+
+
 
 
 def main():
