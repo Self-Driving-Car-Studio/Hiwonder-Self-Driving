@@ -60,6 +60,132 @@ class LaneDetector(object):
 
 
 
+        #################################################################
+    ### START: 횡단보도 인식을 위한 새로운 함수들 (논문 기반) ###
+    #################################################################
+    def setup_bird_eye_view(self):
+        """버드아이뷰 변환을 위한 호모그래피 행렬을 미리 계산합니다."""
+        h, w = self.img_h, self.img_w
+        
+        # 원본 이미지의 사다리꼴 4개 점 (이 값들은 카메라 각도에 따라 조정 필요)
+        src_points = np.float32([
+            [w // 2 - 200, h * 0.65],  # Top-left
+            [w // 2 + 200, h * 0.65],  # Top-right
+            [w // 2 + 320, h],         # Bottom-right
+            [w // 2 - 320, h]          # Bottom-left
+        ])
+        
+        # 변환될 이미지의 직사각형 4개 점
+        dst_points = np.float32([
+            [0, 0],
+            [w, 0],
+            [w, h],
+            [0, h]
+        ])
+        
+        self.homography_matrix = cv2.getPerspectiveTransform(src_points, dst_points)
+        self.inv_homography_matrix = cv2.getPerspectiveTransform(dst_points, src_points)
+
+    def get_bird_eye_view(self, image):
+        """입력 이미지를 버드아이뷰로 변환합니다."""
+        h, w = image.shape[:2]
+        if self.img_h != h or self.img_w != w:
+            self.img_h, self.img_w = h, w
+            self.setup_bird_eye_view()
+        
+        return cv2.warpPerspective(image, self.homography_matrix, (w, h))
+
+    def get_crosswalk_binary(self, bird_eye_image):
+        """횡단보도 인식을 위한 적응형 이진화를 수행합니다."""
+        gray = cv2.cvtColor(bird_eye_image, cv2.COLOR_RGB2GRAY)
+        # 논문의 '영역별 이진화'를 OpenCV의 적응형 스레시홀드로 구현 (더 빠르고 효과적)
+        binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                       cv2.THRESH_BINARY, 11, 2)
+        return binary
+
+    def find_crosswalk_candidates(self, binary_image):
+        """X축 히스토그램을 이용해 횡단보도 후보 영역을 찾습니다."""
+        # 1. X축 히스토그램 계산
+        histogram = np.sum(binary_image, axis=1)
+        
+        # 2. 가우시안 필터로 히스토그램 스무딩
+        histogram = cv2.GaussianBlur(histogram, (1, 5), 0).flatten()
+        
+        # 3. 임계값을 넘는 영역 찾기
+        threshold = self.img_w * 0.4  # 너비의 40% 이상 흰 픽셀이 있는 라인
+        peaks = np.where(histogram > threshold)[0]
+        
+        if len(peaks) == 0:
+            return []
+            
+        # 4. 연속된 영역 그룹화
+        candidate_regions = []
+        start_y = peaks[0]
+        for i in range(1, len(peaks)):
+            if peaks[i] > peaks[i-1] + 1: # 연속이 끊기면
+                end_y = peaks[i-1]
+                # 5. 폭 필터링: 너무 좁은 영역(정지선 등) 제외
+                if end_y - start_y > 30: # 최소 30픽셀 폭을 가진 영역만 후보로
+                    candidate_regions.append((start_y, end_y))
+                start_y = peaks[i]
+        
+        # 마지막 영역 추가
+        end_y = peaks[-1]
+        if end_y - start_y > 30:
+            candidate_regions.append((start_y, end_y))
+            
+        return candidate_regions
+
+    def verify_crosswalk_pattern(self, binary_roi):
+        """
+        후보 영역이 실제 횡단보도 패턴(반복적인 세로줄)을 가졌는지 검증합니다.
+        (SVM을 대체하는 간단한 규칙 기반 방식)
+        """
+        # Y축 히스토그램 (세로 방향 픽셀 합)
+        vertical_hist = np.sum(binary_roi, axis=0)
+        
+        # 세로줄 패턴은 히스토그램에 여러 개의 피크를 만듦
+        # 히스토그램이 일정 값 이상인 지점(피크) 개수 세기
+        h, w = binary_roi.shape
+        peak_threshold = h * 0.3 # ROI 높이의 30% 이상
+        peaks = np.where(vertical_hist > peak_threshold)[0]
+        
+        if len(peaks) < 3: # 피크가 너무 적으면 횡단보도 아님
+            return False
+
+        # 연속된 피크들을 하나의 그룹으로 묶어 실제 피크 개수 계산
+        num_stripes = 0
+        if len(peaks) > 0:
+            num_stripes = 1
+            for i in range(1, len(peaks)):
+                if peaks[i] > peaks[i-1] + 5: # 5픽셀 이상 떨어져 있으면 새로운 줄무늬로 간주
+                    num_stripes += 1
+        
+        # 최소 3개 이상의 줄무늬가 있어야 횡단보도로 인정
+        return num_stripes >= 3
+
+
+    def detect_crosswalk(self, image):
+        """
+        [self_driving.py에서 호출할 함수]
+        횡단보도 후보 영역을 찾고, 검증에 필요한 정보들을 반환합니다.
+        반환값: (후보 영역 y좌표 리스트, 검증에 사용할 버드아이뷰 이미지) or (None, None)
+        """
+        bird_eye_img = self.get_bird_eye_view(image)
+        binary_img = self.get_crosswalk_binary(bird_eye_img)
+        
+        candidate_regions = self.find_crosswalk_candidates(binary_img)
+
+        if not candidate_regions:
+            return None, None
+        
+        return candidate_regions, bird_eye_img
+    
+
+    ###############################
+
+
+
     def set_roi(self, roi):
         self.rois_close_up = roi
         self.active_rois = roi
