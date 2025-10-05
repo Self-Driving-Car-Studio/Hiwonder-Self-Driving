@@ -42,7 +42,7 @@ def launch_setup(context):
         output='screen',
         parameters=[{'classes': ['go', 'right', 'park', 'red', 'green', 'crosswalk', 'yellow', 'right_sign']},
             {"device": "cpu",
-            "model": "traffic_v4_n",
+            "model": "traffic_v4_s",
             "image_topic": "/ascamera/camera_publisher/rgb0/image",
             "camera_info_topic": "/camera/camera_info",
             "camera_info_file": f"{package_share_directory}/config/camera_info.yaml",
@@ -54,7 +54,6 @@ def launch_setup(context):
         executable='self_driving',
         output='screen',
         parameters=[{'start': start}, {'only_line_follow': only_line_follow}],
-        env={'ROS_LOG_ENABLE_FORMATTED_TIME': '1'} 
     )
 
     return [start_arg,
@@ -76,4 +75,3 @@ if __name__ == '__main__':
     ls = LaunchService()
     ls.include_launch_description(ld)
     ls.run()
-
