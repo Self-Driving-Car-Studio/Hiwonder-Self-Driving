@@ -115,7 +115,6 @@ class SelfDrivingNode(Node):
         else:
             self.led2_color = target_color
 
-
     def init_process(self):
         self.timer.cancel()
 
@@ -161,7 +160,7 @@ class SelfDrivingNode(Node):
         self.crosswalk_length = 0.1 + 0.3  # the length of zebra crossing and the robot
 
         self.start_slow_down = False  # slowing down sign
-        self.normal_speed = 0.4 # normal driving speed # 횡단보도 인식을 위해 줄이는중..
+        self.normal_speed = 0.6 # normal driving speed # 횡단보도 인식을 위해 줄이는중..
         self.slow_down_speed = 0.2  # slowing down speed
         self.cornering_speed = 0.2 # 코너링 스피드 ( 미리 진입하기 전부터 작동 )
 
@@ -344,9 +343,11 @@ class SelfDrivingNode(Node):
             if elapsed_time < 1.8: # 90도 회전을 위한 시간 (튜닝 필요)
                 self.logger.info(f"특별 동작 2단계: 회전 ({elapsed_time:.2f}s)")
                 twist.angular.z = -0.8
+                self.start_turn = True
             else: # 1.8초 경과 시 3단계로 전환
                 self.logger.info("특별 동작 2단계 완료. 3단계(횡단보도 추적)로 전환합니다.")
                 self.special_maneuver_stage = 3
+                self.start_turn = False
 
         # --- 3단계: 횡단보도 추적 주행 ---
         elif self.special_maneuver_stage == 3:
@@ -414,29 +415,54 @@ class SelfDrivingNode(Node):
         return items_in_queue[-1] # (image, reception_time)
 
     def _update_leds(self):
-        """로봇의 현재 상태에 따라 LED 색상을 업데이트합니다."""
-        # 우선순위 0: 주차 완료
-        if self.parking_completed:
-            self.set_led_color(1, 0, 0, 0)
-            self.set_led_color(2, 0, 0, 0)
-        # 우선순위 1: 정지 상태 (stop 플래그)
-        elif self.stop:
-            self.set_led_color(1, 255, 0, 0)
-            self.set_led_color(2, 255, 0, 0)
-        # 우선순위 2: 우회전 중
-        elif self.start_turn:
-            self.set_led_color(1, 0, 255, 0) # 1번 LED는 초록색 유지
-            if time.time() - self.last_blink_time > 0.25:
-                self.last_blink_time = time.time()
-                # LED 2번 노란색 점멸
-                self.led2_color = (0, 0, 0) if self.led2_color != (0, 0, 0) else (255, 255, 0)
-                self.set_led_color(2, *self.led2_color)
-        # 우선순위 3: 일반 주행 상태
-        else:
-            self.set_led_color(1, 0, 255, 0)
-            self.set_led_color(2, 0, 255, 0)
+                """로봇의 현재 상태에 따라 LED 색상을 업데이트합니다."""
+                # 우선순위 0: 주차 완료
+                if self.parking_completed:
+                    self.set_led_color(1, 0, 0, 0)
+                    self.set_led_color(2, 0, 0, 0)
+                # [추가] 우선순위 1: 횡단보도에서 정지
+                elif self.stop_for_crosswalk_start_time > 0:
+                    self.set_led_color(1, 255, 0, 0)  # 빨간색
+                    self.set_led_color(2, 255, 0, 0)  # 빨간색
+                # 우선순위 2: 일반 정지 상태 (stop 플래그)
+                elif self.stop:
+                    self.set_led_color(1, 255, 0, 0)
+                    self.set_led_color(2, 255, 0, 0)
+                # 우선순위 3: 우회전 중
+                elif self.start_turn:
+                    self.set_led_color(1, 0, 255, 0) # 1번 LED는 초록색 유지
+                    # 깜빡임 로직
+                    if time.time() - self.last_blink_time > 0.25:
+                        self.last_blink_time = time.time()
+                        # 현재 LED 2번 상태를 토글
+                        if self.led2_color == (255, 255, 0):
+                            # 강제로 초기화 후 전송
+                            self.led2_color = (0, 0, 0)
+                            msg = RGBStates()
+                            state = RGBState()
+                            state.index = 2
+                            state.red = 0
+                            state.green = 0
+                            state.blue = 0
+                            msg.states.append(state)
+                            self.rgb_pub.publish(msg)
+                        else:
+                            # 강제로 초기화 후 전송
+                            self.led2_color = (255, 255, 0)
+                            msg = RGBStates()
+                            state = RGBState()
+                            state.index = 2
+                            state.red = 255
+                            state.green = 255
+                            state.blue = 0
+                            msg.states.append(state)
+                            self.rgb_pub.publish(msg)
+                # 우선순위 4: 일반 주행 상태
+                else:
+                    self.set_led_color(1, 0, 255, 0)
+                    self.set_led_color(2, 0, 255, 0)
 
-# 기존 _handle_crosswalks 함수를 아래 코드로 전체 교체하세요.
+
     def _handle_crosswalks(self):
         """
         횡단보도 및 신호등을 처횡단보도를리하고 정지 여부를 결정합니다.
