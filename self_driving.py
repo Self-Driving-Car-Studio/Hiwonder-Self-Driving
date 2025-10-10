@@ -188,6 +188,7 @@ class SelfDrivingNode(Node):
         self.object_sub = None
         self.image_sub = None
         self.objects_info = []
+        self.initial_go_signal_received = False # 최초 출발 신호 수신 여부
         # [추가] "주차 완료" 상태를 초기화합니다.
         self.parking_completed = False
 
@@ -210,17 +211,12 @@ class SelfDrivingNode(Node):
         self.crosswalk_steer_kp = 0.005  # 횡단보도 추적 P제어 게인 (튜닝 필요)
         # park
         self.park_sign_detected = False    # 'park' 표지판 감지 여부
-<<<<<<< HEAD
         self.is_parking_disabled = False   # 주차 금지 활성화 여부
         self.is_parking_approach_mode = False # 주차 접근 모드에 진입했는지 여부
 
         # 횡단보도 추적관련
         self.is_far_target_acquired = False # 3단계에서 원거리 목표를 확정했는지 여부
         
-=======
-        # [추가] 최초 출발 신호를 받았는지 여부
-        self.initial_go_signal_received = False
->>>>>>> 570af29 (feat: Implement core LED features and driving logic)
 
     def get_node_state(self, request, response):
         response.success = True
@@ -228,7 +224,7 @@ class SelfDrivingNode(Node):
 
     def send_request(self, client, msg):
         future = client.call_async(msg)
-        while rclpy.ok():
+        while rclpy.ok(): 
             if future.done() and future.result():
                 return future.result()
 
@@ -430,7 +426,6 @@ class SelfDrivingNode(Node):
 
         elif self.special_maneuver_stage == 3:
             if elapsed_time < 2.0:
-                
                 self.logger.info(f"특별 동작 3단계: 자세 안정화 직진 ({elapsed_time:.2f}s)")
                 twist.linear.x = self.normal_speed
                 self.is_parking_disabled = True
