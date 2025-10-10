@@ -828,11 +828,11 @@ class SelfDrivingNode(Node):
                 time.sleep(0.01)
 
             # 시각화 및 결과 전송
-            result_image = self._draw_overlays(result_image)
-            bgr_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
-            self.result_publisher.publish(self.bridge.cv2_to_imgmsg(bgr_image, "bgr8"))
-            cv2.imshow('Self Driving View', bgr_image)
-            cv2.waitKey(1)
+            #result_image = self._draw_overlays(result_image)
+            #bgr_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
+            #self.result_publisher.publish(self.bridge.cv2_to_imgmsg(bgr_image, "bgr8"))
+            #cv2.imshow('Self Driving View', bgr_image)
+            #cv2.waitKey(1)
                 
         # 메인 루프 종료 시 정리
         self.set_led_color(1, 0, 0, 0)
