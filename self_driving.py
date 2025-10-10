@@ -27,6 +27,10 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from ros_robot_controller_msgs.msg import BuzzerState, SetPWMServoState, PWMServoState, RGBStates, RGBState # for RGB LED control import: RGBStates, RGBState #jr
 import logging
+# [빵판 LED] gpiozero 라이브러리 import
+from gpiozero import LED
+import atexit
+
 
 class SelfDrivingNode(Node):
     def __init__(self, name):
@@ -62,6 +66,16 @@ class SelfDrivingNode(Node):
         self.machine_type = os.environ.get('MACHINE_TYPE')
         self.lane_detect = lane_detect.LaneDetector("yellow")
 
+        # --- [빵판 LED] GPIO 설정 ---
+        try:
+            self.breadboard_led = LED(17) # GPIO 17번 핀
+            atexit.register(self.breadboard_led.off)
+            self.logger.info('빵판 LED용 GPIO 17번 핀을 성공적으로 초기화했습니다.')
+        except Exception as e:
+            self.logger.error(f'GPIO 초기화 실패: {e}')
+            self.breadboard_led = None
+        self.is_blinking = False
+
         # [추가] LED 상태 추적 및 깜빡임 로직을 위한 변수
         self.led1_color = (-1, -1, -1) # LED의 현재 색상 저장 (중복 전송 방지)
         self.led2_color = (-1, -1, -1)  # LED의 현재 색상 저장 (중복 전송 방지)
@@ -90,6 +104,9 @@ class SelfDrivingNode(Node):
         # 노드 시작 시 LED를 초기 상태(꺼짐)로 설정
         self.set_led_color(1, 0, 0, 0)
         self.set_led_color(2, 0, 0, 0)
+        if self.breadboard_led:
+            self.breadboard_led.off()
+
 
     
     # [추가] LED 제어 함수 - 중복 전송 방지 로직 추가
@@ -161,7 +178,7 @@ class SelfDrivingNode(Node):
         self.crosswalk_length = 0.1 + 0.3  # the length of zebra crossing and the robot
 
         self.start_slow_down = False  # slowing down sign
-        self.normal_speed = 0.6 # normal driving speed # 횡단보도 인식을 위해 줄이는중..
+        self.normal_speed = 0.5 # normal driving speed # 횡단보도 인식을 위해 줄이는중..
         self.slow_down_speed = 0.2  # slowing down speed
         self.cornering_speed = 0.2 # 코너링 스피드 ( 미리 진입하기 전부터 작동 )
 
@@ -193,12 +210,17 @@ class SelfDrivingNode(Node):
         self.crosswalk_steer_kp = 0.005  # 횡단보도 추적 P제어 게인 (튜닝 필요)
         # park
         self.park_sign_detected = False    # 'park' 표지판 감지 여부
+<<<<<<< HEAD
         self.is_parking_disabled = False   # 주차 금지 활성화 여부
         self.is_parking_approach_mode = False # 주차 접근 모드에 진입했는지 여부
 
         # 횡단보도 추적관련
         self.is_far_target_acquired = False # 3단계에서 원거리 목표를 확정했는지 여부
         
+=======
+        # [추가] 최초 출발 신호를 받았는지 여부
+        self.initial_go_signal_received = False
+>>>>>>> 570af29 (feat: Implement core LED features and driving logic)
 
     def get_node_state(self, request, response):
         response.success = True
@@ -243,8 +265,11 @@ class SelfDrivingNode(Node):
         self.logger.info('\033[1;32m%s\033[0m' % "set_running")
         with self.lock:
             self.start = request.data
-            if not self.start:
-                self.mecanum_pub.publish(Twist())
+            with self.lock:
+                if self.start != request.data:
+                    self.start = request.data
+                if not self.start:
+                    self.mecanum_pub.publish(Twist())
         response.success = True
         response.message = "set_running"
         return response
@@ -264,7 +289,28 @@ class SelfDrivingNode(Node):
             self.image_queue.get()
         # put the image into the queue
         self.image_queue.put((rgb_image, reception_time))
-    
+
+    # [추가] 주차 완료 LED 깜빡임 효과 함수
+    def _parking_complete_effect(self):
+        """주차 완료 후 5초간 파란색 LED를 깜빡입니다."""
+        self.logger.info("주차 완료! 축하 세리머니를 시작합니다.")
+        end_time = time.time() + 5  # 5초 동안 실행
+        
+        while time.time() < end_time:
+            # LED 켜기 (파란색)
+            self.set_led_color(1, 0, 0, 255)
+            self.set_led_color(2, 0, 0, 255)
+            time.sleep(0.25) # 0.25초 대기
+            
+            # LED 끄기
+            self.set_led_color(1, 0, 0, 0)
+            self.set_led_color(2, 0, 0, 0)
+            time.sleep(0.25) # 0.25초 대기
+            
+        # 깜빡임이 끝난 후 LED를 확실히 끈다.
+        self.set_led_color(1, 0, 0, 0)
+        self.set_led_color(2, 0, 0, 0)
+
     # parking processing
     def park_action(self):
         if self.machine_type == 'MentorPi_Mecanum':
@@ -314,12 +360,23 @@ class SelfDrivingNode(Node):
             self.mecanum_pub.publish(twist)
             time.sleep(1.5)
         self.mecanum_pub.publish(Twist())
-        # [추가] 모든 주차 동작이 끝나면 "주차 완료" 상태 플래그를 True로 설정합니다.
+        if self.breadboard_led and not self.is_blinking:
+            self.logger.info("주행 종료: 빵판 LED 5초간 점멸 시작 (백그라운드)")
+            # background=True로 설정하여 즉시 다음 코드로 넘어가게 함
+            self.breadboard_led.blink(on_time=0.25, off_time=0.25, n=10, background=True)
+            self.is_blinking = True
+        # 1. 일회성 세리머니 이벤트 실행
+        self._parking_complete_effect()
+
+        # 2. 모든 동작이 끝났으므로, '주차 완료' 상태 플래그를 True로 설정
         self.parking_completed = True
-        self.logger.info('주차 완료! LED를 소등합니다.')
+        self.logger.info('주차 완료 및 세리머니 종료. 이제부터 LED는 계속 소등됩니다.')
+        # [수정] 주차 완료 시, self.start 플래그를 False로 변경하여 주행 종료 상태로 전환
+        self.start = False
 
         # 주차 조건 확인 및 실행
     def _handle_parking(self):
+
         """주차 조건을 확인하고, 충족 시 주차 동작을 실행합니다."""
 
         if self.is_parking_disabled:
@@ -440,13 +497,6 @@ class SelfDrivingNode(Node):
         return twist
 
 
-
-
-
-
-
-
-
     def _perform_warmup(self):
         """첫 실행 시 주요 연산 함수를 미리 호출하여 최적화를 준비합니다."""
         self.logger.info("Starting warm-up routine...")
@@ -485,6 +535,7 @@ class SelfDrivingNode(Node):
                 if self.parking_completed:
                     self.set_led_color(1, 0, 0, 0)
                     self.set_led_color(2, 0, 0, 0)
+                    return # 다른 LED 상태를 덮어쓰지 않도록 여기서 함수 종료
                 # [추가] 우선순위 1: 횡단보도에서 정지
                 elif self.stop_for_crosswalk_start_time > 0:
                     self.set_led_color(1, 255, 0, 0)  # 빨간색
@@ -527,6 +578,26 @@ class SelfDrivingNode(Node):
                     self.set_led_color(1, 0, 255, 0)
                     self.set_led_color(2, 0, 255, 0)
 
+    def _wait_for_initial_green_light(self):
+        """
+        최초 출발 신호를 확인합니다. 녹색 신호등이 감지될 때까지 기다립니다.
+        Returns:
+            bool: 주행을 시작할 수 있으면 True, 대기해야 하면 False.
+        """
+        # YOLOv5가 감지한 신호등 객체가 있는지 확인
+        if self.traffic_signs_status is not None:
+            # 신호등이 초록불이면 출발 허가
+            if self.traffic_signs_status.class_name == 'green':
+                self.logger.info("출발 신호 (초록불) 감지! 주행을 시작합니다.")
+                return True
+            # 신호등이 빨간불이면 대기
+            elif self.traffic_signs_status.class_name == 'red':
+                self.logger.info("정지 신호 (빨간불) 감지. 출발 대기 중...")
+                return False
+        
+        # 신호등이 아직 감지되지 않았으면 계속 대기
+        self.logger.info("출발 신호등을 찾는 중... 대기합니다.")
+        return False
 
     def _handle_crosswalks(self):
         """
@@ -727,6 +798,35 @@ class SelfDrivingNode(Node):
             twist_command = Twist()
 
             if self.start:
+                # --- 빵판 LED 제어 (주행 중) ---
+                if self.breadboard_led:
+                    if self.is_blinking:
+                        self.breadboard_led.off()
+                        self.is_blinking = False
+                    self.breadboard_led.on()
+                # =================== [추가된 로직 시작] ===================
+                # 최초 출발 신호 대기 (주행 시작 후 한 번만 실행됨)
+                if not self.initial_go_signal_received:
+                    if self._wait_for_initial_green_light():
+                        # 초록불이 확인되면, 플래그를 True로 바꿔 다시는 이 로직을 실행하지 않음
+                        self.initial_go_signal_received = True
+                    else:
+                        # 아직 출발 신호가 아니면 로봇을 정지시키고, LED를 빨간색으로 변경
+                        self.mecanum_pub.publish(Twist()) 
+                        self.set_led_color(1, 255, 0, 0) # 대기 중임을 알리는 빨간색 LED
+                        self.set_led_color(2, 255, 0, 0)
+                        
+                        # 화면 출력은 계속 수행
+                        result_image = self._draw_overlays(result_image)
+                        bgr_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
+                        self.result_publisher.publish(self.bridge.cv2_to_imgmsg(bgr_image, "bgr8"))
+                        cv2.imshow('Self Driving View', bgr_image)
+                        cv2.waitKey(1)
+                        
+                        # 이후의 주행 로직을 건너뛰고 다음 루프로 넘어감
+                        continue
+                # =================== [추가된 로직 끝] =====================
+
                 self._update_leds()
                 
                 # 1. 주차 로직 (최고 우선순위)
@@ -797,6 +897,8 @@ def main():
         executor.spin()
     finally:
         node.logger.info('노드를 종료합니다. LED를 끄고 로봇을 정지합니다.')
+        if node.breadboard_led:
+            node.breadboard_led.off()
         node.set_led_color(1, 0, 0, 0)
         node.set_led_color(2, 0, 0, 0)
         node.mecanum_pub.publish(Twist())
