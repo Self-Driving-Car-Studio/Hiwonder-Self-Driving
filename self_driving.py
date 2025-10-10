@@ -790,12 +790,12 @@ class SelfDrivingNode(Node):
                         self.set_led_color(1, 255, 0, 0) # 대기 중임을 알리는 빨간색 LED
                         self.set_led_color(2, 255, 0, 0)
                         
-                        # 화면 출력은 계속 수행
-                        result_image = self._draw_overlays(result_image)
-                        bgr_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
-                        self.result_publisher.publish(self.bridge.cv2_to_imgmsg(bgr_image, "bgr8"))
-                        cv2.imshow('Self Driving View', bgr_image)
-                        cv2.waitKey(1)
+                        # 화면 출력은 계속 수행 #밑에 해당코드들 있고 오류 발생으로 주석처리함
+                        #result_image = self._draw_overlays(result_image)
+                        #bgr_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
+                        #self.result_publisher.publish(self.bridge.cv2_to_imgmsg(bgr_image, "bgr8"))
+                        #cv2.imshow('Self Driving View', bgr_image)
+                        #cv2.waitKey(1)
                         
                         # 이후의 주행 로직을 건너뛰고 다음 루프로 넘어감
                         continue
