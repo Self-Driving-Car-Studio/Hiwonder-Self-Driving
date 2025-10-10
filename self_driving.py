@@ -142,11 +142,7 @@ class SelfDrivingNode(Node):
         self.right = True
         self.first = True  # for warm-up
 
-        self.have_turn_right = False
-        self.detect_turn_right = False
-        self.detect_far_lane = False
-        self.park_x = -1  # obtain the x-pixel coordinate of a parking sign
-
+   
         self.start_turn_time_stamp = 0
         self.count_turn = 0
         self.start_turn = False  # start to turn
@@ -187,6 +183,16 @@ class SelfDrivingNode(Node):
 
         # 추가
         self.intersection_pass_start_time = 0 # 교차로 통과를 시작한 시간
+
+        # 우회전 관련
+        # self.is_performing_hard_turn = False # 하드코딩 우회전 수행 여부
+        # self.hard_turn_start_time = 0      # 하드코딩 우회전 시작 시간
+        self.right_sign_detected = False   # 'right' 표지판 감지 여부
+        self.special_maneuver_stage = 0  # 0:없음, 1:우회전-직진, 2:우회전-회전, 3:횡단보도 추적
+        self.maneuver_start_time = 0
+        self.crosswalk_steer_kp = 0.005  # 횡단보도 추적 P제어 게인 (튜닝 필요)
+        # park
+        self.park_sign_detected = False    # 'park' 표지판 감지 여부
 
     def get_node_state(self, request, response):
         response.success = True
@@ -299,6 +305,82 @@ class SelfDrivingNode(Node):
         self.parking_completed = True
         self.logger.info('주차 완료! LED를 소등합니다.')
 
+        # 주차 조건 확인 및 실행
+    def _handle_parking(self):
+        """주차 조건을 확인하고, 충족 시 주차 동작을 실행합니다."""
+        # 주차 표지판이 없거나 이미 주차를 완료했다면 아무것도 하지 않음
+        if not self.park_sign_detected or self.parking_completed:
+            return False
+
+        # 근처 횡단보도를 기준으로 주차 위치 판단
+        crosswalks_detected = [obj for obj in self.objects_info if obj.class_name == 'crosswalk']
+        for cw in crosswalks_detected:
+            if cw.box[3] > 480 * 0.7:  # 횡단보도가 일정 위치에 오면
+                self.logger.info("주차 조건 충족! 주차를 시작합니다.")
+                self.park_action()  # 블로킹 방식의 주차 동작 실행
+                self.start = False  # 주차 완료 후 자율주행 미션 종료
+                return True # 주차를 시작했음을 알림
+        return False
+
+
+        # 우회전 실행
+    def _handle_special_maneuver(self):
+        """단계별 특별 동작(우회전, 횡단보도 추적)을 수행합니다."""
+        twist = Twist()
+        elapsed_time = time.time() - self.maneuver_start_time
+
+        # --- 1단계: 우회전 전 직진 ---
+        if self.special_maneuver_stage == 1:
+            if elapsed_time < 1.3:
+                self.logger.info(f"특별 동작 1단계: 직진 ({elapsed_time:.2f}s)")
+                twist.linear.x = 0.4
+            else: # 1.3초 경과 시 2단계로 전환
+                self.logger.info("특별 동작 1단계 완료. 2단계(회전)로 전환합니다.")
+                self.special_maneuver_stage = 2
+                self.maneuver_start_time = time.time() # 다음 단계를 위해 타이머 초기화
+
+        # --- 2단계: 우회전 ---
+        elif self.special_maneuver_stage == 2:
+            if elapsed_time < 1.8: # 90도 회전을 위한 시간 (튜닝 필요)
+                self.logger.info(f"특별 동작 2단계: 회전 ({elapsed_time:.2f}s)")
+                twist.angular.z = -0.8
+            else: # 1.8초 경과 시 3단계로 전환
+                self.logger.info("특별 동작 2단계 완료. 3단계(횡단보도 추적)로 전환합니다.")
+                self.special_maneuver_stage = 3
+
+        # --- 3단계: 횡단보도 추적 주행 ---
+        elif self.special_maneuver_stage == 3:
+            self.logger.info("특별 동작 3단계: 횡단보도 추적 주행")
+            crosswalks = [obj for obj in self.objects_info if obj.class_name == 'crosswalk']
+            
+            if not crosswalks:
+                # 횡단보도가 안 보이면 천천히 직진
+                twist.linear.x = 0.15
+            else:
+                # 가장 멀리 있는(y좌표가 가장 작은) 횡단보도를 타겟으로 설정
+                target_cw = min(crosswalks, key=lambda cw: cw.box[1])
+                
+                # 타겟 횡단보도의 중앙 x좌표 계산
+                target_x = (target_cw.box[0] + target_cw.box[2]) / 2
+                
+                # P제어: 이미지 중앙(320)과 타겟의 x좌표 오차를 이용해 조향
+                center_of_image = 320 # 640 / 2
+                error = center_of_image - target_x
+                twist.angular.z = self.crosswalk_steer_kp * error
+                
+                # 정면으로 직진
+                twist.linear.x = self.normal_speed * 0.75 # 일반 속도보다 약간 느리게
+
+        return twist
+
+
+
+
+
+
+
+
+
     def _perform_warmup(self):
         """첫 실행 시 주요 연산 함수를 미리 호출하여 최적화를 준비합니다."""
         self.logger.info("Starting warm-up routine...")
@@ -357,13 +439,13 @@ class SelfDrivingNode(Node):
 # 기존 _handle_crosswalks 함수를 아래 코드로 전체 교체하세요.
     def _handle_crosswalks(self):
         """
-        횡단보도 및 신호등을 처리하고 정지 여부를 결정합니다.
+        횡단보도 및 신호등을 처횡단보도를리하고 정지 여부를 결정합니다.
         (로직 개선 버전)
         """
         # 1. '교차로 통과 중' 상태이면 3초간 횡단보도 인식 무시
         if self.is_passing_intersection:
-            # 3초가 지났으면 '교차로 통과' 상태를 해제
-            if time.time() - self.intersection_pass_start_time > 3.0:
+            # 4초가 지났으면 '교차로 통과' 상태를 해제
+            if time.time() - self.intersection_pass_start_time > 4.0:
                 self.logger.info("교차로 통과 완료. 다음 횡단보도를 준비합니다.")
                 self.is_passing_intersection = False
             else:
@@ -386,6 +468,19 @@ class SelfDrivingNode(Node):
 
         # 3. 횡단보도 앞에 정지해 있는 동안의 로직 (신호등 또는 시간 대기)
         if self.stop_for_crosswalk_start_time > 0:
+            # 우회전 표지판 감지 시 특별 동작을 최우선으로 처리
+            if self.right_sign_detected:
+                self.logger.info("'right' 표지판 감지! 특별 동작을 시작합니다.")
+                # =======================================================
+                # ▼ 아래 2줄을 수정합니다.
+                self.special_maneuver_stage = 1 # 1단계(우회전-직진) 시작
+                self.maneuver_start_time = time.time()
+                # =======================================================
+                self.stop_for_crosswalk_start_time = 0
+                return False
+
+
+
             can_go = False
             
             # 신호등이 감지된 경우
@@ -399,7 +494,7 @@ class SelfDrivingNode(Node):
             # 신호등이 없을 때
             else:
                 # 1초 대기 후 출발
-                if time.time() - self.stop_for_crosswalk_start_time > 1.0:
+                if time.time() - self.stop_for_crosswalk_start_time > 1.2:
                     self.logger.info("신호등 없음. 1초 대기 후 출발합니다.")
                     can_go = True
             
@@ -526,50 +621,42 @@ class SelfDrivingNode(Node):
             self.logger.info(f'[PERF] Total: {total_loop_time:.2f}ms')
 
     def main(self):
+        """메인 루프: 로봇의 상태를 확인하고 적절한 동작을 지시합니다."""
         if self.first:
             self._perform_warmup()
             
         while self.is_running:
-            loop_start_time = time.time() # 루프 시작 시간
-            
             image, reception_time = self._get_latest_image()
             if image is None:
                 time.sleep(0.001)
                 continue
 
-            # 변수 초기화
             result_image = image.copy()
             twist_command = Twist()
-            stop_for_crosswalk = False
-
-            # 타이밍 측정용 변수
-            t1_start, t1_end, t2_start, t2_end, t3_start, t3_end = (loop_start_time,) * 6
 
             if self.start:
-                self._update_leds()  # 현재 상태에 맞게 LED 업데이트
+                self._update_leds()
+                
+                # 1. 주차 로직 (최고 우선순위)
+                if self._handle_parking():
+                    self.mecanum_pub.publish(Twist()) # 주차 완료 후 정지
+                    continue # 주차 미션 완료, 이후 동작 중지
 
-                t1_start = time.time()
                 binary_image = self.lane_detect.get_binary(image)
-                t1_end = time.time()
-
-                ### 횡단보도 로직 추가
-                t2_start = time.time()
-                crosswalk_stop_triggered = self._handle_crosswalks()
-                t2_end = time.time()
-
-                ### 시간 측정 시작 ###
-                # 2. 차선 인식 및 제어 로직 시간 측정
-
-                # 횡단보도 때문에 안 멈췄다면 ( False 가 아니라면 / 기본값 False)
-                if not crosswalk_stop_triggered: 
-                    t3_start = time.time()
-                    result_image, twist_command = self._follow_lane(binary_image, result_image)
-                    t3_end = time.time()
+                
+                # 2. 우회전 또는 일반 주행 로직 결정
+                if self.special_maneuver_stage > 0:
+                    twist_command = self._handle_special_maneuver()
+                else:
+                    # 횡단보도 처리 후 정지해야 하는지 확인
+                    should_stop = self._handle_crosswalks()
+                    if not should_stop:
+                        # 정지할 필요 없으면 차선 주행
+                        result_image, twist_command = self._follow_lane(binary_image, result_image)
                 
                 self.mecanum_pub.publish(twist_command)
 
-            else:
-                # [수정] 주행이 끝나면 (self.start가 False이면) 모든 불을 끕니다.
+            else: # self.start가 False일 때 (주차 완료 또는 시작 전)
                 self.set_led_color(1, 0, 0, 0)
                 self.set_led_color(2, 0, 0, 0)
                 time.sleep(0.01)
@@ -578,23 +665,10 @@ class SelfDrivingNode(Node):
             result_image = self._draw_overlays(result_image)
             bgr_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
             self.result_publisher.publish(self.bridge.cv2_to_imgmsg(bgr_image, "bgr8"))
-
-            # =======================================================
             cv2.imshow('Self Driving View', bgr_image)
             cv2.waitKey(1)
-            # =====================================================
-
-
-            # 성능 로깅
-            # self._log_performance(loop_start_time, reception_time, t1_start, t1_end, t2_start, t2_end, t3_start, t3_end)
-
-            # 루프 주기 조절 (약 30 FPS 목표)
-            elapsed_time = 0.03 - (time.time() - loop_start_time)
-            sleep_time = 0.03 - elapsed_time
-            if sleep_time > 0:
-                time.sleep(sleep_time)
                 
-        # [수정] 메인 루프 종료 시 LED 끄기
+        # 메인 루프 종료 시 정리
         self.set_led_color(1, 0, 0, 0)
         self.set_led_color(2, 0, 0, 0)
         self.mecanum_pub.publish(Twist())
@@ -604,14 +678,23 @@ class SelfDrivingNode(Node):
     def get_object_callback(self, msg):
         self.objects_info = msg.objects
         self.traffic_signs_status = None
+        self.right_sign_detected = False # 매번 콜백이 호출될 때마다 초기화
+        self.park_sign_detected = False  # 매번 콜백이 호출될 때마다 초기화
 
-        # 객체 리스트를 순회하며 신호등 정보만 찾습니다.
-        # Red 신호를 더 높은 우선순위로 처리합니다.
+        # 객체 리스트를 순회하며 필요한 정보 업데이트
         for obj in self.objects_info:
-            if obj.class_name in ['red', 'green']:
+            # 'right' 표지판 감지
+            if obj.class_name == 'right':
+                self.right_sign_detected = True
+            
+            # 'park' 표지판 감지
+            elif obj.class_name == 'park':
+                self.park_sign_detected = True
+
+            # 신호등 정보 찾기 (Red 신호 우선)
+            elif obj.class_name in ['red', 'green']:
                 if self.traffic_signs_status is None or self.traffic_signs_status.class_name == 'green':
                     self.traffic_signs_status = obj
-        # 횡단보도 필터링 및 타겟 선정은 _handle_crosswalks에서 직접 처리하므로 여기서는 하지 않습니다.
 
 def main():
     node = SelfDrivingNode('self_driving')
