@@ -51,7 +51,7 @@ class SelfDrivingNode(Node):
 
         self.pid = pid.PID(0.2, 0.0, 0.1) # D 제어부분 0.1 로 증가
         self.turn_pid = pid.PID(0.2, 0.0, 0.4) # 일반pid 와 turn 전용 pid 구분, turn 의 D부분을 올림
-        self.crosswalk_pid = pid.PID(P=0.002, I=0.0, D=0.003)# 횡단보도 추적용 PID
+        self.crosswalk_pid = pid.PID(P=0.002, I=0.0, D=0.0005)# 횡단보도 추적용 PID
   
         self.param_init() # 모든 상태변수 초기화
 
@@ -454,12 +454,12 @@ class SelfDrivingNode(Node):
                 twist.linear.x = 0.1 # 탐색 시에는 아주 천천히 전진
 
                 if self.scan_direction == 'right':
-                    twist.angular.z = -0.3 # 우회전 탐색
+                    twist.angular.z = -0.1 # 우회전 탐색
                     if scan_elapsed_time > 2.5: # 2.5초 후 방향 전환
                         self.scan_direction = 'left'
                         self.scan_start_time = time.time()
                 else: # 'left'
-                    twist.angular.z = 0.3 # 좌회전 탐색
+                    twist.angular.z = 0.1 # 좌회전 탐색
                     if scan_elapsed_time > 5.0: # 5초 후 방향 전환
                         self.scan_direction = 'right'
                         self.scan_start_time = time.time()
@@ -497,6 +497,15 @@ class SelfDrivingNode(Node):
                     center_of_image = 320
                     self.crosswalk_pid.SetPoint = center_of_image
                     self.crosswalk_pid.update(self.smoothed_crosswalk_x) 
+
+                    # [핵심 수정] PID 출력값을 합리적인 범위(-0.5 ~ 0.5)로 제한합니다.
+                    output_z = -self.crosswalk_pid.output # 부호가 반대일 수 있으니 확인 필요
+                    twist.angular.z = common.set_range(output_z, -0.5, 0.5)
+                    
+                    twist.linear.x = self.normal_speed * 0.5
+
+                    # [디버깅용 로그 추가] 실제 z값이 어떻게 들어가는지 확인
+                    self.logger.info(f"PID Output: {output_z:.4f}, Clamped Angular.z: {twist.angular.z:.4f}")  
                     
                     twist.angular.z = self.crosswalk_pid.output
                     twist.linear.x = self.normal_speed * 0.5
