@@ -227,6 +227,9 @@ class SelfDrivingNode(Node):
 
         # [추가] 주차 미션 활성화 플래그
         self.park_mission_activated = False # 'park' 표지판을 한 번이라도 봤는지 기억
+
+        # [추가] 마지막으로 감지된 횡단보도 정보를 기억하기 위한 변수
+        self.last_known_crosswalk = None
         
 
     def get_node_state(self, request, response):
@@ -422,15 +425,24 @@ class SelfDrivingNode(Node):
                 self.crosswalk_pid.clear() # PID 제어 시작 전 초기화
                 self.is_parking_disabled = False
 
-        # --- 4단계: [수정됨] 주차를 위한 횡단보도 탐색---
-# --- 4단계: [수정됨] 주차를 위한 횡단보도 탐색 및 정렬 주행 ---
-        elif self.special_maneuver_stage == 4:
-            # 1. 주행 기준이 될 횡단보도 찾기
-            crosswalks = [obj for obj in self.objects_info if obj.class_name == 'crosswalk']
+                # [추가] 4단계를 시작하기 전, 이전의 기억을 모두 초기화
+                self.last_known_crosswalk = None
+                self.park_mission_activated = False
+                self.scan_start_time = 0
+                self.crosswalk_x_history.clear() # [추가] 필터 기록 초기화
 
-            # 2. 횡단보도를 찾지 못했을 경우: 좌우 탐색 모드
-            if not crosswalks:
-                # 탐색을 처음 시작하는 경우, 타이머 초기화
+        # --- 4단계: [수정됨] 주차를 위한 횡단보도 탐색 및 정렬 주행 ---
+        elif self.special_maneuver_stage == 4:
+            # 1. 현재 프레임에서 횡단보도가 보이는지 확인
+            current_crosswalks = [obj for obj in self.objects_info if obj.class_name == 'crosswalk']
+
+            # 2. 횡단보도가 보인다면, '마지막 위치' 기억을 업데이트
+            if current_crosswalks:
+                self.last_known_crosswalk = max(current_crosswalks, key=lambda cw: cw.box[3])
+                self.scan_start_time = 0 # 탐색할 필요 없으니 타이머 리셋
+
+            # 3. '마지막 위치' 기억이 전혀 없다면 (아직 한 번도 못 찾았다면) -> 탐색 모드
+            if self.last_known_crosswalk is None:
                 if self.scan_start_time == 0:
                     self.logger.info("특별 동작 [4/4]: 주행용 기준 횡단보도 탐색 시작!")
                     self.scan_start_time = time.time()
@@ -453,18 +465,14 @@ class SelfDrivingNode(Node):
                         self.scan_start_time = time.time()
                 return twist
 
-            # 3. 횡단보도를 찾았을 경우: 정렬 및 주행 로직
+            # 4. '마지막 위치' 기억이 있다면 -> 안정적인 정렬 및 주행 로직
             else:
-                self.scan_start_time = 0
-                target_crosswalk = max(crosswalks, key=lambda cw: cw.box[3])
-
-                # [핵심 수정 1] 'park' 표지판을 한 번이라도 봤다면, 주차 미션을 활성화
                 if self.park_sign_detected:
                     self.park_mission_activated = True
 
-                # [핵심 수정 2] 주차 조건: '미션이 활성화'되었고 '횡단보도가 가까워졌는가?'
-                if self.park_mission_activated and target_crosswalk.box[3] > 480 * 0.5:
-                    self.logger.info("주차 미션 활성화됨 & 목표 지점 도달! 주차를 시작합니다.")
+                if self.park_mission_activated and self.last_known_crosswalk.box[3] > 480 * 0.5:
+                    self.logger.info("✅ 주차 미션 활성화됨 & 목표 지점 도달! 주차를 시작합니다.")
+                    # ... (기존 주차 실행 코드) ...
                     self.mecanum_pub.publish(Twist())
                     time.sleep(0.1)
                     self.park_action()
@@ -478,7 +486,9 @@ class SelfDrivingNode(Node):
                     log_msg = "Park 미션 활성화!" if self.park_mission_activated else "Park 표지판 찾는 중..."
                     self.logger.info(f"횡단보도 중앙 정렬 주행 중... ({log_msg})")
 
-                    current_x = (target_crosswalk.box[0] + target_crosswalk.box[2]) / 2
+                    # [핵심] 현재 프레임이 아닌, '기억된' 횡단보도 위치를 사용
+                    current_x = (self.last_known_crosswalk.box[0] + self.last_known_crosswalk.box[2]) / 2
+ 
                     self.crosswalk_x_history.append(current_x)
                     if len(self.crosswalk_x_history) > 5:
                         self.crosswalk_x_history.pop(0)
