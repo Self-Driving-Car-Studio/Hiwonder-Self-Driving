@@ -500,15 +500,13 @@ class SelfDrivingNode(Node):
 
                     # [핵심 수정] PID 출력값을 합리적인 범위(-0.5 ~ 0.5)로 제한합니다.
                     output_z = -self.crosswalk_pid.output # 부호가 반대일 수 있으니 확인 필요
-                    twist.angular.z = common.set_range(output_z, -0.5, 0.5)
+                    twist.angular.z = common.set_range(output_z, -0.2, 0.2)
                     
                     twist.linear.x = self.normal_speed * 0.5
 
                     # [디버깅용 로그 추가] 실제 z값이 어떻게 들어가는지 확인
                     self.logger.info(f"PID Output: {output_z:.4f}, Clamped Angular.z: {twist.angular.z:.4f}")  
                     
-                    twist.angular.z = self.crosswalk_pid.output
-                    twist.linear.x = self.normal_speed * 0.5
                 
         return twist
 
