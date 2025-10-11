@@ -51,7 +51,7 @@ class SelfDrivingNode(Node):
 
         self.pid = pid.PID(0.2, 0.0, 0.1) # D 제어부분 0.1 로 증가
         self.turn_pid = pid.PID(0.2, 0.0, 0.4) # 일반pid 와 turn 전용 pid 구분, turn 의 D부분을 올림
-        self.crosswalk_pid = pid.PID(P=0.004, I=0.0001, D=0.006)# 횡단보도 추적용 PID
+        self.crosswalk_pid = pid.PID(P=0.002, I=0.0, D=0.003)# 횡단보도 추적용 PID
   
         self.param_init() # 모든 상태변수 초기화
 
@@ -216,6 +216,17 @@ class SelfDrivingNode(Node):
 
         # 횡단보도 추적관련
         self.is_far_target_acquired = False # 3단계에서 원거리 목표를 확정했는지 여부
+
+        # [추가] 횡단보도 탐색(스캔)을 위한 변수
+        self.scan_direction = 'right'  # 횡단보도 탐색 방향 ('right' 또는 'left')
+        self.scan_start_time = 0       # 탐색 방향 전환을 위한 타이머
+
+        # [추가] 횡단보도 x좌표 이동 평균 필터를 위한 변수
+        self.crosswalk_x_history = [] # 최근 x좌표들을 저장할 리스트
+        self.smoothed_crosswalk_x = -1  # 필터를 거친 부드러운 x좌표
+
+        # [추가] 주차 미션 활성화 플래그
+        self.park_mission_activated = False # 'park' 표지판을 한 번이라도 봤는지 기억
         
 
     def get_node_state(self, request, response):
@@ -311,7 +322,7 @@ class SelfDrivingNode(Node):
     def park_action(self):
         if self.machine_type == 'MentorPi_Mecanum':
             twist = Twist()
-            twist.linear.y = -0.2
+            twist.linear.y = -0.25
             self.mecanum_pub.publish(twist)
             time.sleep(0.38/0.2)
         elif self.machine_type == 'MentorPi_Acker':
@@ -370,31 +381,8 @@ class SelfDrivingNode(Node):
         # [수정] 주차 완료 시, self.start 플래그를 False로 변경하여 주행 종료 상태로 전환
         self.start = False
 
-        # 주차 조건 확인 및 실행
-    def _handle_parking(self):
-
-        """주차 조건을 확인하고, 충족 시 주차 동작을 실행합니다."""
-
-        if self.is_parking_disabled:
-            return False
-
-        # 주차 표지판이 없거나 이미 주차를 완료했다면 아무것도 하지 않음
-        if not self.park_sign_detected or self.parking_completed:
-            return False
-
-        # 근처 횡단보도를 기준으로 주차 위치 판단
-        crosswalks_detected = [obj for obj in self.objects_info if obj.class_name == 'crosswalk']
-        for cw in crosswalks_detected:
-            if cw.box[3] > 480 * 0.3:  # 횡단보도가 일정 위치에 오면
-                self.logger.info("주차 조건 충족! 주차를 시작합니다.")
-                self.park_action()  # 블로킹 방식의 주차 동작 실행
-                self.start = False  # 주차 완료 후 자율주행 미션 종료
-                return True # 주차를 시작했음을 알림
-            
-        return False
 
 
-        # 우회전 실행
     # 우회전 실행
     def _handle_special_maneuver(self):
         """단계별 특별 동작(우회전, 횡단보도 추적)을 수행합니다."""
@@ -403,7 +391,7 @@ class SelfDrivingNode(Node):
 
         # --- 1단계: 우회전 전 직진 ---
         if self.special_maneuver_stage == 1:
-            if elapsed_time < 1.3:
+            if elapsed_time < 1.4:
                 self.logger.info(f"특별 동작 1단계: 직진 ({elapsed_time:.2f}s)")
                 twist.linear.x = 0.4
             else: # 1.3초 경과 시 2단계로 전환
@@ -424,50 +412,84 @@ class SelfDrivingNode(Node):
                 
         # --- 3단계: 우회전 후 자세 안정화를 위한 직진 ---
         elif self.special_maneuver_stage == 3:
-            if elapsed_time < 2.3:
+            if elapsed_time < 1.5:
                 self.logger.info(f"특별 동작 3단계: 자세 안정화 직진 ({elapsed_time:.2f}s)")
-                twist.linear.x = 0.8 #self.normal_speed
+                twist.linear.x = 0.4
                 self.is_parking_disabled = True
             else:
-                self.logger.info("특별 동작 3단계 완료. 4단계(주차 접근)로 전환합니다.")
+                self.logger.info("특별 동작 3단계 완료. 4단계(횡단보도 탐색)로 전환합니다.")
                 self.special_maneuver_stage = 4
                 self.crosswalk_pid.clear() # PID 제어 시작 전 초기화
                 self.is_parking_disabled = False
 
-        # --- 4단계: [수정됨] 주차를 위한 횡단보도 접근 및 정렬 ---
+        # --- 4단계: [수정됨] 주차를 위한 횡단보도 탐색---
+# --- 4단계: [수정됨] 주차를 위한 횡단보도 탐색 및 정렬 주행 ---
         elif self.special_maneuver_stage == 4:
+            # 1. 주행 기준이 될 횡단보도 찾기
             crosswalks = [obj for obj in self.objects_info if obj.class_name == 'crosswalk']
-            
-            # 접근할 횡단보도가 보이지 않으면, 탐색을 위해 느리게 우회전하며 전진
+
+            # 2. 횡단보도를 찾지 못했을 경우: 좌우 탐색 모드
             if not crosswalks:
-                self.logger.info("특별 동작 [4/4]: 주차용 횡단보도 탐색 중...")
-                twist.linear.x = 0.15
-                twist.angular.z = -0.2
+                # 탐색을 처음 시작하는 경우, 타이머 초기화
+                if self.scan_start_time == 0:
+                    self.logger.info("특별 동작 [4/4]: 주행용 기준 횡단보도 탐색 시작!")
+                    self.scan_start_time = time.time()
+                    self.scan_direction = 'right'
+
+                scan_elapsed_time = time.time() - self.scan_start_time
+                self.logger.warning(f"횡단보도 탐색 중... (방향: {self.scan_direction}, 시간: {scan_elapsed_time:.1f}s)")
+                
+                twist.linear.x = 0.1 # 탐색 시에는 아주 천천히 전진
+
+                if self.scan_direction == 'right':
+                    twist.angular.z = -0.3 # 우회전 탐색
+                    if scan_elapsed_time > 2.5: # 2.5초 후 방향 전환
+                        self.scan_direction = 'left'
+                        self.scan_start_time = time.time()
+                else: # 'left'
+                    twist.angular.z = 0.3 # 좌회전 탐색
+                    if scan_elapsed_time > 5.0: # 5초 후 방향 전환
+                        self.scan_direction = 'right'
+                        self.scan_start_time = time.time()
                 return twist
 
-            # 우회전 후이므로, 주차 지점은 가장 가까운(이미지 아래쪽) 횡단보도임
-            nearest_crosswalk = max(crosswalks, key=lambda cw: cw.box[3])
-            
-            # [최종 조건 확인] 주차 표지판이 보이고, 횡단보도가 충분히 가까워졌다면 주차 실행
-            if self.park_sign_detected and nearest_crosswalk.box[3] > 480 * 0.5:
-                self.logger.info("!!! 주차 조건 최종 충족! 주차를 시작합니다. !!!")
-                self.park_action()
-                self.start = False
-                self.special_maneuver_stage = 0
-                return Twist() # 주차 동작 실행 후 정지
-            
-            # [접근 로직] 아직 조건이 안되면, 가장 가까운 횡단보도를 향해 PID 제어로 접근
+            # 3. 횡단보도를 찾았을 경우: 정렬 및 주행 로직
             else:
-                log_msg = "Park 감지!" if self.park_sign_detected else "Park 표지판 찾는 중..."
-                self.logger.info(f"특별 동작 [4/4]: 가까운 횡단보도로 접근 중... ({log_msg})")
+                self.scan_start_time = 0
+                target_crosswalk = max(crosswalks, key=lambda cw: cw.box[3])
+
+                # [핵심 수정 1] 'park' 표지판을 한 번이라도 봤다면, 주차 미션을 활성화
+                if self.park_sign_detected:
+                    self.park_mission_activated = True
+
+                # [핵심 수정 2] 주차 조건: '미션이 활성화'되었고 '횡단보도가 가까워졌는가?'
+                if self.park_mission_activated and target_crosswalk.box[3] > 480 * 0.5:
+                    self.logger.info("주차 미션 활성화됨 & 목표 지점 도달! 주차를 시작합니다.")
+                    self.mecanum_pub.publish(Twist())
+                    time.sleep(0.1)
+                    self.park_action()
+                    self.start = False
+                    self.special_maneuver_stage = 0
+                    return Twist()
                 
-                target_x = (nearest_crosswalk.box[0] + nearest_crosswalk.box[2]) / 2
-                center_of_image = 320
-                self.crosswalk_pid.SetPoint = center_of_image
-                self.crosswalk_pid.update(target_x)
-                
-                twist.angular.z = self.crosswalk_pid.output
-                twist.linear.x = self.normal_speed * 0.5
+                # 3-2. 주차 조건이 아니라면, 횡단보도 중앙에 맞춰 전진
+                else:
+                    # [핵심 수정 3] 로그 메시지를 현재 미션 상태에 맞게 변경
+                    log_msg = "Park 미션 활성화!" if self.park_mission_activated else "Park 표지판 찾는 중..."
+                    self.logger.info(f"횡단보도 중앙 정렬 주행 중... ({log_msg})")
+
+                    current_x = (target_crosswalk.box[0] + target_crosswalk.box[2]) / 2
+                    self.crosswalk_x_history.append(current_x)
+                    if len(self.crosswalk_x_history) > 5:
+                        self.crosswalk_x_history.pop(0)
+                    self.smoothed_crosswalk_x = sum(self.crosswalk_x_history) / len(self.crosswalk_x_history)
+
+                    center_of_image = 320
+                    self.crosswalk_pid.SetPoint = center_of_image
+                    self.crosswalk_pid.update(self.smoothed_crosswalk_x) 
+                    
+                    twist.angular.z = self.crosswalk_pid.output
+                    twist.linear.x = self.normal_speed * 0.5
                 
         return twist
 
@@ -803,10 +825,6 @@ class SelfDrivingNode(Node):
 
                 self._update_leds()
                 
-                # 1. 주차 로직 (최고 우선순위)
-                if self._handle_parking():
-                    self.mecanum_pub.publish(Twist()) # 주차 완료 후 정지
-                    continue # 주차 미션 완료, 이후 동작 중지
 
                 binary_image = self.lane_detect.get_binary(image)
                 
