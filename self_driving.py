@@ -227,6 +227,9 @@ class SelfDrivingNode(Node):
 
         # [추가] 주차 미션 활성화 플래그
         self.park_mission_activated = False # 'park' 표지판을 한 번이라도 봤는지 기억
+
+        # [추가] Park 표지판이 꾸준히 보이는지 확인하기 위한 타이머
+        self.park_sign_first_detected_time = None
         
 
     def get_node_state(self, request, response):
@@ -439,15 +442,15 @@ class SelfDrivingNode(Node):
                 scan_elapsed_time = time.time() - self.scan_start_time
                 self.logger.warning(f"횡단보도 탐색 중... (방향: {self.scan_direction}, 시간: {scan_elapsed_time:.1f}s)")
                 
-                twist.linear.x = 0.1 # 탐색 시에는 아주 천천히 전진
+                twist.linear.x = 0.2 # 탐색 시에는 아주 천천히 전진
 
                 if self.scan_direction == 'right':
-                    twist.angular.z = -0.3 # 우회전 탐색
+                    twist.angular.z = -0.05 # 우회전 탐색
                     if scan_elapsed_time > 2.5: # 2.5초 후 방향 전환
                         self.scan_direction = 'left'
                         self.scan_start_time = time.time()
                 else: # 'left'
-                    twist.angular.z = 0.3 # 좌회전 탐색
+                    twist.angular.z = 0.05 # 좌회전 탐색
                     if scan_elapsed_time > 5.0: # 5초 후 방향 전환
                         self.scan_direction = 'right'
                         self.scan_start_time = time.time()
@@ -458,9 +461,25 @@ class SelfDrivingNode(Node):
                 self.scan_start_time = 0
                 target_crosswalk = max(crosswalks, key=lambda cw: cw.box[3])
 
-                # [핵심 수정 1] 'park' 표지판을 한 번이라도 봤다면, 주차 미션을 활성화
+                # th : 이 부분은 우회전 직후 횡단보도 정렬 주항하면서 기존 코드인 park 표지판 인식후 crosswalk 가 480 * 0.5 될 때
+                # 가끔 양옆 횡단보도를 보고 주차를 바로 해버리는 버그를 막기위한 로직 ( 우회전 직후 약 2초 후에 주차 미션을 True )
+
+                # --- [추가] 논리적 타이머를 이용한 주차 미션 활성화 ---
+                DELAY_DURATION = 2.0  # 2초 동안 지속되어야 함
+
+                # Park 표지판이 보이면 타이머를 시작하거나 유지합니다.
                 if self.park_sign_detected:
-                    self.park_mission_activated = True
+                    if self.park_sign_first_detected_time is None:
+                        self.logger.info(f"Park 표지판 최초 감지! {DELAY_DURATION}초간 지속 확인 시작...")
+                        self.park_sign_first_detected_time = time.time() # 타이머 시작
+                    
+                    # 타이머가 시작되었고, 딜레이 시간이 지났다면 미션 활성화
+                    elif time.time() - self.park_sign_first_detected_time > DELAY_DURATION:
+                        if not self.park_mission_activated: # 로그가 한 번만 찍히도록
+                             self.logger.info(f"Park 표지판 {DELAY_DURATION}초 지속 확인! 주차 미션 활성화.")
+                        self.park_mission_activated = True
+                
+                # Park 표지판이 보이지 않으면 타이머를 리셋합니다.
 
                 # [핵심 수정 2] 주차 조건: '미션이 활성화'되었고 '횡단보도가 가까워졌는가?'
                 if self.park_mission_activated and target_crosswalk.box[3] > 480 * 0.5:
@@ -489,10 +508,10 @@ class SelfDrivingNode(Node):
                     self.crosswalk_pid.update(self.smoothed_crosswalk_x) 
                     
                     # [핵심 수정] PID 출력값을 합리적인 범위(-0.5 ~ 0.5)로 제한합니다.
-                    output_z = -self.crosswalk_pid.output # PID 방향이 반대일 수 있으므로 - 부호 추가 (테스트 필요)
-                    twist.angular.z = common.set_range(output_z, -0.2, 0.2)
+                    output_z = self.crosswalk_pid.output # PID 방향이 반대일 수 있으므로 - 부호 추가 (테스트 필요)
+                    twist.angular.z = common.set_range(output_z, -0.3, 0.3)
                     
-                    twist.linear.x = 0.1
+                    twist.linear.x = 0.2
 
                     # [디버깅용 로그 추가] 실제 z값이 어떻게 들어가는지 확인
                     self.logger.info(f"PID Output: {output_z:.4f}, Clamped Angular.z: {twist.angular.z:.4f}")
